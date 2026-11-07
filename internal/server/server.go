@@ -30,6 +30,13 @@ type Server struct {
 	webFS    http.FileSystem
 	liveMode bool
 	invoices InvoiceLister
+
+	// Separate budgets so speech playback never eats into chat turns.
+	chatLimit  *rateLimiter
+	speakLimit *rateLimiter
+
+	sessions *sessionInvoices
+	pending  *pendingActions
 }
 
 // Options configures a Server.
@@ -43,8 +50,9 @@ type Options struct {
 	// LiveMode indicates real PayPal credentials are in use (vs. mock), surfaced
 	// to the UI so users know whether invoices are real sandbox invoices.
 	LiveMode bool
-	// Invoices provides read-only invoice listing for the dashboard. Optional;
-	// when nil, the dashboard shows no rows.
+	// Invoices provides invoice listing for the dashboard and runs actions the
+	// merchant approved. Optional; when nil, the dashboard shows no rows and
+	// approvals fail.
 	Invoices InvoiceLister
 }
 
@@ -66,6 +74,12 @@ func New(opts Options) *Server {
 		webFS:    opts.WebFS,
 		liveMode: opts.LiveMode,
 		invoices: opts.Invoices,
+
+		chatLimit:  newRateLimiter(opts.Config.Server.RateLimitPerMinute, opts.Config.Server.RateLimitPerHour),
+		speakLimit: newRateLimiter(opts.Config.Server.RateLimitPerMinute, opts.Config.Server.RateLimitPerHour),
+
+		sessions: newSessionInvoices(),
+		pending:  newPendingActions(),
 	}
 }
 
@@ -75,9 +89,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/locales", s.handleLocales)
-	mux.HandleFunc("POST /api/chat", s.handleChat)
-	mux.HandleFunc("POST /api/speak", s.handleSpeak)
+	mux.HandleFunc("POST /api/chat", s.chatLimit.limit(s.handleChat))
+	mux.HandleFunc("POST /api/speak", s.speakLimit.limit(s.handleSpeak))
+	mux.HandleFunc("POST /api/confirm", s.chatLimit.limit(s.handleConfirm))
 	mux.HandleFunc("GET /api/invoices", s.handleInvoices)
+	mux.HandleFunc("GET /api/invoices/{id}/qr", s.handleInvoiceQR)
 
 	if s.webFS != nil {
 		mux.Handle("GET /", http.FileServer(s.webFS))

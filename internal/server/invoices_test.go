@@ -36,6 +36,27 @@ func TestNormalizeInvoicesMockShape(t *testing.T) {
 	}
 }
 
+func TestHandleInvoiceQR(t *testing.T) {
+	stub := &stubLister{resp: `{"qr_image_url":"https://example.com/qr.png"}`}
+	cfg := &config.Config{Brand: config.Brand{Name: "PaySay"}}
+	srv := New(Options{Config: cfg, Invoices: stub})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/invoices/INV2-123/qr", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res["invoice_id"] != "INV2-123" {
+		t.Errorf("invoice_id = %v, want INV2-123", res["invoice_id"])
+	}
+}
+
 func TestNormalizeInvoicesPayPalV2Shape(t *testing.T) {
 	raw := `{"items":[
 		{"id":"INV2-9","status":"UNPAID",
@@ -51,6 +72,29 @@ func TestNormalizeInvoicesPayPalV2Shape(t *testing.T) {
 	if r.ID != "INV2-9" || r.Status != "UNPAID" || r.Customer != "payer@x.com" ||
 		r.Amount != "99.00" || r.Currency != "EUR" {
 		t.Errorf("row = %+v", r)
+	}
+}
+
+// TestNormalizeInvoicesLiveSandboxShape uses the list_invoices item shape
+// returned by the live PayPal sandbox, where create_time sits under
+// detail.metadata.
+func TestNormalizeInvoicesLiveSandboxShape(t *testing.T) {
+	raw := `{"total_pages":1,"total_items":1,"items":[
+		{"id":"INV2-HPMV-U49W-SPT3-FDWN","status":"DRAFT",
+		 "detail":{"currency_code":"EUR","invoice_number":"0001","invoice_date":"2026-11-06",
+		           "metadata":{"create_time":"2026-11-07T01:05:44Z"}},
+		 "amount":{"currency_code":"EUR","value":"45.00"},
+		 "primary_recipients":[{"billing_info":{"email_address":"maria@example.com"}}]}
+	]}`
+	rows := normalizeInvoices(raw)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if got := rows[0].Created; got != "2026-11-07T01:05:44Z" {
+		t.Errorf("created = %q, want detail.metadata.create_time", got)
+	}
+	if rows[0].Amount != "45.00" || rows[0].Customer != "maria@example.com" {
+		t.Errorf("row = %+v", rows[0])
 	}
 }
 

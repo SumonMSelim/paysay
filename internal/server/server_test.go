@@ -204,3 +204,17 @@ func (s stubSynth) Synthesize(ctx context.Context, text string, locale i18n.Loca
 	}
 	return &voice.Audio{MIMEType: "audio/mpeg", Data: s.data}, nil
 }
+
+func TestChatRejectsOversizedMessage(t *testing.T) {
+	ag := &stubAgent{}
+	srv := testServer(t, ag, nil)
+	body := `{"message":"` + strings.Repeat("a", maxMessageChars+1) + `"}`
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
+	}
+	if ag.lastMessage != "" {
+		t.Error("oversized message reached the agent")
+	}
+}

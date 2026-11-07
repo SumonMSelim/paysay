@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 )
 
 // InvoiceLister is the read-only capability the server needs to populate the
@@ -36,7 +38,8 @@ type InvoiceRow struct {
 
 // handleInvoices returns the merchant's invoices as normalized rows for the
 // AG Grid dashboard. It calls the list_invoices tool and tolerates both the
-// mock shape and the PayPal Invoicing v2 shape.
+// mock shape and the PayPal Invoicing v2 shape. With ?scope=mine it returns
+// only the invoices this browser session created.
 func (s *Server) handleInvoices(w http.ResponseWriter, r *http.Request) {
 	if s.invoices == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"invoices": []InvoiceRow{}})
@@ -59,9 +62,70 @@ func (s *Server) handleInvoices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows := normalizeInvoices(res.Text)
+	if r.URL.Query().Get("scope") == "mine" {
+		rows = s.sessions.filter(sessionID(w, r), rows)
+	}
 	// Most-recent first for a sensible default order.
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Created > rows[j].Created })
 	writeJSON(w, http.StatusOK, map[string]any{"invoices": rows})
+}
+
+// handleInvoiceQR generates a scannable payment QR code for an invoice.
+func (s *Server) handleInvoiceQR(w http.ResponseWriter, r *http.Request) {
+	if s.invoices == nil {
+		writeError(w, http.StatusNotFound, "invoice service not available")
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "invoice ID is required")
+		return
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"invoice_id": id,
+		"width":      300,
+		"height":     300,
+	})
+
+	res, err := s.invoices.Invoke(r.Context(), "generate_invoice_qr_code", args)
+	if err != nil || res.IsError {
+		s.log.Error("generate qr code failed", "invoice_id", id, "error", err, "tool_error", res.IsError)
+		writeError(w, http.StatusBadGateway, "could not generate QR code")
+		return
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(res.Text), &data); err != nil {
+		data = map[string]any{}
+	}
+
+	// Clean up base64 image if wrapped in multipart text by PayPal MCP
+	if img, ok := extractBase64Image(res.Text); ok {
+		data["image"] = img
+	}
+
+	host := "www.sandbox.paypal.com"
+	if s.cfg.PayPal.Environment == "PRODUCTION" {
+		host = "www.paypal.com"
+	}
+	payURL := fmt.Sprintf("https://%s/invoice/p/#%s", host, id)
+	data["invoice_id"] = id
+	data["payment_url"] = payURL
+	writeJSON(w, http.StatusOK, data)
+}
+
+func extractBase64Image(raw string) (string, bool) {
+	idx := strings.Index(raw, "iVBORw0KGgo")
+	if idx == -1 {
+		return "", false
+	}
+	end := strings.IndexAny(raw[idx:], "\r\n\"\\")
+	if end == -1 {
+		return raw[idx:], true
+	}
+	return raw[idx : idx+end], true
 }
 
 // rawInvoiceList models the union of fields we read from either provider shape.
@@ -84,6 +148,9 @@ type rawInvoice struct {
 	Detail struct {
 		CurrencyCode string `json:"currency_code"`
 		CreateTime   string `json:"create_time"`
+		Metadata     struct {
+			CreateTime string `json:"create_time"`
+		} `json:"metadata"`
 	} `json:"detail"`
 	Amount struct {
 		Value        string `json:"value"`
@@ -118,8 +185,9 @@ func normalizeInvoices(raw string) []InvoiceRow {
 		// Amount: flat total, else nested amount value.
 		row.Amount = firstNonEmpty(it.Total, it.Amount.Value)
 
-		// Created: flat, else nested detail.
-		row.Created = firstNonEmpty(it.CreateTime, it.Detail.CreateTime)
+		// Created: flat, else nested detail. Live PayPal responses put it under
+		// detail.metadata.
+		row.Created = firstNonEmpty(it.CreateTime, it.Detail.CreateTime, it.Detail.Metadata.CreateTime)
 
 		rows = append(rows, row)
 	}
