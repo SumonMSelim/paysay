@@ -1,104 +1,131 @@
-# PaySay — Devpost Submission Writeup
+# PaySay: Devpost Submission Writeup
 
-> Paste these sections into the matching fields on the Devpost submission form.
-> Before submitting, run the live PayPal sandbox path so the claims below match
-> reality. If you demo in mock mode, soften "a real PayPal sandbox invoice" to
-> "a PayPal invoice via the sandbox integration."
+> Paste these sections into the matching Devpost fields. Every claim below
+> describes what is built and tested today. Sections marked **NOT YET BUILT**
+> must be removed or rewritten before submitting.
 
 ## Inspiration
-Hundreds of millions of small merchants, market vendors, café owners, tutors,
-drivers, run their businesses in a second language and with their hands full.
-They lose real income not to fraud but to friction: invoices never created,
-unpaid bills never chased, finance apps that assume English and a free hand to
-type. We wanted to collapse all of that into the most natural interface there
-is: just saying what you want, in your own language.
+Hundreds of millions of small merchants (market vendors, café owners, tutors,
+drivers) run their business in a second language and with their hands full.
+They lose real income not to fraud but to friction: invoices never written,
+unpaid bills never chased, finance tools that assume English and a free hand to
+type. We wanted the most natural interface there is: just say what you want, in
+your own language, and stay in control of every payment.
 
 ## What it does
-PaySay is a voice-first AI assistant for small-merchant payments. A merchant
-speaks a request in German, Thai, or English, and PaySay:
-- understands the intent,
-- confirms the money-moving details (recipient, amount, currency),
-- calls the right **PayPal** tool to create, send, look up, or send a reminder
-  for an invoice,
-- and replies back in the merchant's language, out loud.
+PaySay is a merchant workspace with a voice assistant for PayPal invoicing.
+The merchant speaks in German, Thai or English, and PaySay:
 
-Example spoken commands:
-- *"Create an invoice for 30 euros for kunde@example.com and send it."* (German)
-- *"Are there any unpaid invoices?"* (Thai)
-- *"Send a reminder for invoice INV2-ABC."*
+- understands the request with an Amazon Bedrock agent,
+- looks up invoices immediately and shows them as cards with customer, amount,
+  status and one-tap actions,
+- prepares money-moving actions (create an invoice, send it, send a reminder)
+  and shows a **confirmation card** with customer, items and total; nothing
+  happens until the merchant taps Confirm, and "chase everyone who hasn't
+  paid" becomes one card with one tap,
+- opens the invoice table already filtered when asked to show invoices,
+- runs the approved action through the official **PayPal** MCP server,
+- answers out loud in the merchant's language.
 
-If a request is ambiguous, PaySay asks a clarifying question instead of
-guessing, because it moves real money.
+Around the assistant is a full workspace: an overview with outstanding and
+collected totals and a "needs attention" list, an AG Grid invoice table with
+search, filters and per-row actions, a payment QR code for paying at the
+counter, and a log of everything the assistant did. The entire interface,
+including money and date formats, follows the merchant's language.
 
 ## How we built it
-- **Backend:** Go (standard-library `net/http`), clean layered architecture,
-  ~3,400 lines, fully tested.
-- **AI agent:** Amazon **Bedrock** (Nova Pro) via the Converse API with tool
-  use. The model reasons about the request and decides which PayPal tools to
-  call, this is the "brain", not just transcription.
-- **PayPal:** the official **PayPal Agent Toolkit / MCP server** (`@paypal/mcp`),
-  driving the **Invoicing API** in the sandbox. Our Go backend launches the MCP
-  server and speaks the **Model Context Protocol** (JSON-RPC 2.0 over stdio) to
-  it via a hand-written, auditable client.
-- **Speech:** browser Web Speech API for speech-to-text in the selected
-  language; **Amazon Polly** for spoken replies where a voice exists (German,
-  English), with graceful text fallback for Thai.
-- **Dashboard:** an **AG Grid** invoice table in the activity panel, so the
-  merchant can sort and filter their invoices (e.g. show only unpaid).
-- **Frontend:** an accessible web UI (skip links, ARIA live regions, keyboard
-  support, reduced-motion support), embedded directly in the Go binary.
-- **Packaging:** multi-stage Docker (Go + Node for the MCP server), one-command
-  `docker compose up`.
+- **Backend:** Go with the standard library's `net/http`; layered packages for
+  config, agent, PayPal, i18n, voice and HTTP; unit, integration and
+  end-to-end tests, all passing with the race detector.
+- **AI agent:** Amazon Bedrock **Nova Pro** through the Converse API with tool
+  use. The model decides which PayPal tools to call and in what order; it is
+  the brain, not a transcription layer.
+- **PayPal:** the official **PayPal Agent Toolkit / MCP server**
+  (`@paypal/mcp`) driving the **Invoicing API** in the sandbox. The Go backend
+  launches it and speaks the **Model Context Protocol** (JSON-RPC 2.0 over
+  stdio) through a small hand-written client. Access tokens are minted from the
+  app's client credentials and refreshed before expiry.
+- **Approval gate:** money-moving tools are held by the agent loop and returned
+  as a pending action. The server stores it per browser session with a random,
+  single-use ID and a 10-minute expiry; only the merchant's Confirm runs it.
+- **Speech:** the browser's Web Speech API for speech to text in the selected
+  language; **Amazon Polly** for spoken replies (English, German), with a text
+  fallback for Thai.
+- **Interface:** a vanilla JS/CSS merchant panel embedded in the Go binary;
+  sidebar navigation on desktop, bottom tabs and a full-screen assistant on
+  phones; English, German and Thai throughout.
+- **Packaging:** multi-stage Docker image (Go binary plus Node for the MCP
+  server), one-command Docker Compose.
 
 ## How AI and PayPal work together (Tools field)
-AI and PayPal are not side by side, they are wired together. The PayPal MCP
-tools are surfaced to the Bedrock model as tool specifications; the model emits
-a tool-use request; our Go orchestrator validates it against a safety allow-list
-and forwards it to PayPal; the result is fed back to the model, which continues
-until it has a final answer. The agent only moves money through PayPal, and only
-through an allow-listed set of invoice tools.
+The PayPal MCP tools are offered to the Bedrock model as tool specifications.
+The model emits a tool-use request; the Go orchestrator checks it against an
+allow-list. Read-only tools (list and look up invoices) run immediately and
+their results go back to the model, which continues until it has an answer.
+Money-moving tools stop the loop and become a confirmation card; only the
+merchant's approval sends them to PayPal, with seller details taken from
+configuration rather than from the model.
 
-- **AI tool used:** Amazon Bedrock (Nova Pro) via the Converse API, with tool
-  use / function calling. Amazon Polly for text-to-speech.
-- **PayPal technology used:** PayPal Agent Toolkit / MCP server and the PayPal
-  Invoicing API (sandbox).
-- **Sponsor tool used:** AG Grid (Community) for the invoice dashboard.
+- **AI used:** Amazon Bedrock (Nova Pro), Converse API with tool use; Amazon
+  Polly for text to speech.
+- **PayPal technology used:** PayPal Agent Toolkit / MCP server; PayPal
+  Invoicing API (sandbox): create, send, list, look up, remind, payment QR.
+- **Sponsor tools used:** AG Grid Community v33 for the invoice table and the
+  overview's recent invoices. The agent drives the grid: a screen-only
+  `show_invoices` tool turns "show me Anna's unpaid invoices" into a status
+  and quick filter. Also: status pill renderers, per-row action cells, an
+  external status filter, a pinned totals row that follows filters (with
+  per-currency sums), row flashing when the agent changes an invoice, saved
+  column state, and localized value formatters.
+
+### NOT YET BUILT: remove or rewrite before submitting
+- **Render:** hosted demo URL via a `render.yaml` Blueprint; reminder job on
+  Render Workflows with a daily Render Cron Job.
+- **APIMatic:** PayPal TypeScript SDK, built with the APIMatic Context Plugin,
+  to skip customers who already paid before sending reminders.
+- **Bryntum:** a collections timeline (Scheduler) per customer.
 
 ## Challenges we ran into
-- Bridging a **Go** backend to PayPal's **TypeScript-first** agent toolkit. We
-  drove PayPal's MCP server as a subprocess over JSON-RPC rather than
-  reimplementing the integration, keeping a small, auditable dependency surface
-  on a money-moving path.
-- Making the AI do more than speech-to-text: real intent understanding,
-  disambiguation, and safe confirmation across languages.
-- Multilingual output: Polly has no standard Thai voice, so TTS degrades
-  gracefully to text per locale.
+- **Go meets a TypeScript-first toolkit.** Rather than reimplement PayPal's
+  integration, we drove PayPal's MCP server as a subprocess over JSON-RPC,
+  keeping a small, auditable surface on a money-moving path.
+- **An agent that moves money must not act alone.** Asking for confirmation in
+  the prompt was not enough, so approval became a hard gate in code.
+- **Models invent what they don't know.** In the live sandbox, Nova filled the
+  seller's business name and address with placeholders. We now strip
+  model-supplied seller fields and use configured values.
+- **Live and mock shapes differ.** PayPal's real responses nest fields (for
+  example the creation time under `detail.metadata`), so we normalize both.
+- **Multilingual output:** Polly has no standard Thai voice, so speech degrades
+  gracefully to text, and dates follow the Buddhist calendar in Thai.
 
 ## Accomplishments that we're proud of
-- A real, end-to-end agentic-commerce flow: one spoken sentence -> a real PayPal
-  sandbox invoice.
-- Security built in from the start: untrusted-tool-input validation, tool
-  allow-listing, no secrets or customer data in logs, CSP and other hardening,
-  non-root container.
-- Runnable by anyone: it works even without a PayPal token via a built-in
-  simulated provider, clearly badged as demo mode.
+- One spoken sentence becomes a real PayPal sandbox invoice, with the merchant
+  approving the exact customer, items and total first.
+- A complete product experience rather than a chat demo: overview, invoice
+  table, activity log and assistant, in three languages, on desktop and phone.
+- Security throughout: approval gate, tool allow-list, untrusted-input
+  handling, rate limits, no secrets or customer data in logs, CSP, non-root
+  container.
 
 ## What we learned
-How to compose an LLM agent with a third-party MCP tool server safely, and how
-much a native-language voice interface changes who a payments product is
-actually *for*.
+How to compose an LLM agent with a third-party MCP tool server safely, why
+safety rules belong in code rather than prompts, and how much a
+native-language interface changes who a payments product is actually for.
 
 ## What's next for PaySay
-More languages (Vietnamese, Polish, Tagalog, Spanish), a richer invoice
-dashboard, recurring invoices and subscriptions via PayPal's subscription tools,
-and on-device speech for privacy.
+Due dates and overdue tracking, more languages (Vietnamese, Polish, Tagalog,
+Spanish), recurring invoices through PayPal's subscription tools, and on-device
+speech for privacy.
 
 ## Built with
-`go` · `amazon-bedrock` · `amazon-nova` · `amazon-polly` · `paypal-invoicing-api`
-· `paypal-agent-toolkit` · `model-context-protocol` · `ag-grid` ·
-`web-speech-api` · `docker`
+`go` · `amazon-bedrock` · `amazon-nova` · `amazon-polly` ·
+`paypal-invoicing-api` · `paypal-agent-toolkit` · `model-context-protocol` ·
+`ag-grid` · `web-speech-api` · `docker`
 
 ## Try it out
 - GitHub: https://github.com/SumonMSelim/paysay
-- Setup: `cp .env.example .env` (add AWS creds; PayPal sandbox token optional)
-  -> `docker compose up --build` -> open `http://localhost:8080`
+- Run locally: `cp .env.example .env` (add AWS credentials; PayPal sandbox
+  client ID and secret optional), then `docker compose up --build` and open
+  `http://localhost:8085`.
+- Hosted demo: **NOT YET BUILT**, add the Render URL here.

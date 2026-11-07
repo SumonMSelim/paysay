@@ -1,84 +1,86 @@
-# PaySay — Demo Video Script (under 3 minutes)
+# PaySay: Demo Video Script (under 3 minutes)
 
-Judges may stop watching at 3:00, so the hook and a working end-to-end flow must
-land early. Target ~2:45.
+Judges may stop at 3:00, so the problem and a working end-to-end flow must land
+early. Target about 2:45.
 
-Structure: problem (20s) -> what it is (15s) -> live demo in two languages (90s)
--> how it works / tech (30s) -> close (15s).
+Structure: problem (20s) → the workspace (15s) → German: create and send
+(65s) → Thai: what's unpaid (30s) → how it works (30s) → close (15s).
 
 ---
 
-## [0:00–0:20] Hook / problem
-*(On camera or voiceover over a shot of a busy small shop / market stall.)*
+## [0:00–0:20] Problem
+*(Voiceover over a busy market stall or café counter.)*
 
 > "Small merchants lose money every day, not to fraud, but to friction. They're
-> too busy serving customers to stop and type out invoices, chase unpaid bills,
-> or fight with English-only finance apps. What if they could just *say* it, in
-> their own language?"
+> too busy serving customers to type invoices, chase unpaid bills, or fight
+> English-only finance apps. What if they could just say it, in their own
+> language, and still stay in control?"
 
-## [0:20–0:35] What it is
-*(Show the PaySay UI, clean, brand and tagline visible.)*
+## [0:20–0:35] The workspace
+*(PaySay open on the Overview, English. Hover the totals and "Needs
+attention".)*
 
-> "This is PaySay: a voice-first AI assistant that lets a merchant run their
-> PayPal invoicing by speaking, in German, Thai, or English. Powered by Amazon
-> Bedrock and the official PayPal agent toolkit."
+> "This is PaySay: a merchant workspace with a voice assistant for PayPal
+> invoicing. Outstanding money, what needs attention, and an assistant that
+> speaks the merchant's language."
 
-## [0:35–1:25] Live demo 1 — German — create + send
-*(Select German. Click the mic. Speak clearly.)*
+## [0:35–1:40] German: create, confirm, send
+*(Switch the language to Deutsch: the whole panel changes. Tap "Tippen und
+sprechen".)*
 
-**You say (German):**
-> "Erstelle eine Rechnung über 30 Euro für kunde@example.com und sende sie."
+**You say:**
+> "Erstelle eine Rechnung über 30 Euro an kunde@example.com für Gartenarbeit."
 
-*(On screen: transcript appears, then the assistant replies in German. The
-"PayPal activity" panel shows `create_invoice` then `send_invoice` with the real
-sandbox invoice ID.)*
-
-**Voiceover:**
-> "PaySay understood the intent, confirmed the amount, and called two real
-> PayPal tools: it created the invoice and sent it, all from one spoken
-> sentence. That's a real invoice in the PayPal sandbox."
-
-## [1:25–2:00] Live demo 2 — Thai — read-back query
-*(Switch to Thai. Click mic.)*
-
-**You say (Thai):** "มีใบแจ้งหนี้ที่ยังไม่จ่ายไหม" ("Are there any unpaid invoices?")
-
-*(Assistant lists unpaid invoices and replies in Thai.)*
+*(The confirmation card appears: customer, "Gartenarbeit", 30,00 €, total.)*
 
 **Voiceover:**
-> "Switching languages is instant. Here it answers in Thai, reading back which
-> customers still owe money, so the merchant always knows where they stand."
+> "The assistant understood the request and prepared the invoice, but it
+> doesn't act on its own. Anything that moves money waits for the merchant."
 
-## [2:00–2:10] Safety beat (optional but strong)
-*(Say something ambiguous, e.g. just "Erstelle eine Rechnung" with no amount.)*
+*(Tap "Rechnung erstellen". The "Rechnung erstellt" card appears with the real
+sandbox invoice ID; the new row flashes in the grid.)*
 
-**Voiceover:**
-> "And because this moves real money, PaySay asks before it acts, clarifying
-> missing details instead of guessing."
+> "That's a real invoice in the PayPal sandbox, created through PayPal's
+> official agent toolkit."
 
-## [2:10–2:40] How it works / tech
-*(Simple architecture diagram on screen.)*
+*(In the grid or the chat card, tap Send on that invoice, then confirm.)*
 
-> "Under the hood: speech-to-text in the browser, an Amazon Bedrock Nova agent
-> that reasons about the request and decides which tools to call, and PayPal's
-> official MCP server driving the Invoicing API. The agent treats its own tool
-> inputs as untrusted and only calls an allow-listed set of invoice tools."
+> "Sending it is one more tap, again with a confirmation."
+
+## [1:40–2:10] Thai: what's still unpaid?
+*(Switch to ไทย. Tap the mic.)*
+
+**You say:** "มีใบแจ้งหนี้ไหนที่ยังไม่ได้ชำระบ้าง" *(Which invoices are still unpaid?)*
+
+*(The reply in Thai, with invoice cards: customer, amount, status, date, and a
+Remind button. Dates show in the Buddhist calendar.)*
+
+> "Switching languages is instant, down to the date format. The answer comes
+> with the invoices themselves, and a reminder is one tap away."
+
+## [2:10–2:40] How it works
+*(Simple diagram: browser → Go → Bedrock Nova → approval → PayPal MCP →
+Invoicing API.)*
+
+> "Speech becomes text in the browser. An Amazon Bedrock Nova agent decides
+> which PayPal tools to call. Look-ups run immediately; anything that moves
+> money becomes a confirmation card, and only the merchant's tap sends it to
+> PayPal's MCP server. That rule is enforced in code, not just asked of the
+> model."
 
 ## [2:40–2:55] Close
-> "PaySay: for the millions of small merchants who'd rather talk than type. Run
-> your business by voice. Thanks for watching."
+> "PaySay: for the millions of small merchants who'd rather talk than type.
+> Run your business by voice."
 
 ---
 
-## Recording tips
-- Set the PayPal sandbox token so the activity panel shows a **real invoice
-  ID**, this is the single most convincing moment. Only say "PayPal sandbox"
-  when it is actually live; otherwise soften the wording.
-- Pre-write the exact sentences you will speak and rehearse pronunciation; ASR
-  is cleaner with deliberate phrasing.
-- Record in Chrome (Web Speech API support), quiet room, browser zoom ~125% so
-  text is legible on small screens.
-- Keep the activity panel visible during both demos, that is your proof of real
-  PayPal calls.
-- No copyrighted music. Use silence or a royalty-free track.
-- Upload to YouTube, set to public, put the link on the Devpost submission form.
+## Recording checklist
+- Run in **live sandbox** mode (sidebar shows "PayPal sandbox · live") so the
+  invoice IDs are real. Say "PayPal sandbox" only when it is.
+- Set `PAYPAL_MERCHANT_NAME` so invoices show a business name.
+- Start with **New conversation** and a tidy sandbox (a few invoices in
+  different states make the overview look real).
+- Rehearse the exact sentences; deliberate phrasing helps speech recognition.
+- Chrome, quiet room, browser zoom about 125% so text is legible.
+- PayPal's sandbox does not email customers; don't claim an email was received.
+- No copyrighted music. Upload to YouTube as public and add the link on Devpost.

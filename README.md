@@ -1,167 +1,194 @@
 # PaySay
 
-**Run your business by voice.** PaySay is a voice-first AI assistant that lets
-small merchants manage their PayPal invoicing by speaking in their own language.
-A market vendor or café owner can say, in German or Thai:
+**Run your business by voice.** PaySay is a merchant workspace with a built-in
+voice assistant for PayPal invoicing. A market vendor or café owner speaks in
+their own language, in German, Thai or English, and PaySay creates, sends and
+chases PayPal invoices for them:
 
-> *"Create an invoice for 30 euros for kunde@example.com"*
-> *"Which invoices haven't been paid?"*
-> *"Send a reminder for invoice INV2-ABC"*
+> *"Erstelle eine Rechnung über 30 Euro an kunde@example.com für Gartenarbeit"*
+> *"มีใบแจ้งหนี้ไหนที่ยังไม่ได้ชำระบ้าง"* (Which invoices are still unpaid?)
+> *"Send a reminder for my latest invoice"*
 
-PaySay understands the request, confirms the money-moving details, calls the
-right PayPal tool, and replies in the merchant's language, out loud.
+The assistant understands the request, calls the right PayPal tool, and answers
+out loud in the merchant's language. Nothing that moves money happens until the
+merchant taps **Confirm** on a card showing the customer, items and total.
 
-Built for the **PayPal AI Hackathon**. It meaningfully uses both PayPal (the
-official PayPal Agent Toolkit / MCP server for real invoicing) and AI (an Amazon
-Bedrock Nova agent that reasons, disambiguates, and calls tools).
+Built for the **PayPal AI Hackathon**: it uses PayPal (the official PayPal Agent
+Toolkit / MCP server and the Invoicing API) and AI (an Amazon Bedrock Nova agent
+that reasons and calls tools) together, not side by side.
 
 ---
+
+## What the merchant sees
+
+- **Overview:** outstanding and collected totals, drafts, collection rate, and
+  a "Needs attention" list with one-tap Remind / Send.
+- **Invoices:** an AG Grid table with status pills, search, status filter
+  (draft, awaiting payment, paid), a "Created by me" toggle, per-row Send,
+  Remind and payment-QR actions, and a pinned totals row that follows the
+  filters. Rows the assistant just changed flash briefly, and the column
+  layout is remembered. Saying *"show me Anna's unpaid invoices"* opens the
+  table already filtered.
+- **Agent activity:** every PayPal action the assistant took, with details.
+- **Assistant (docked on the right, full screen on phones):** a large
+  *Tap and speak* button, example requests in the merchant's language, invoice
+  cards in replies, and confirmation cards before any money-moving action.
+  Several actions (for example a reminder per unpaid invoice) share one card
+  and one tap.
+
+The whole panel, not just the replies, follows the selected language,
+including money and date formats (for example `328,00 €` in German and
+Buddhist-calendar dates in Thai).
 
 ## How it works
 
 ```
-Browser (mic, Web Speech API)         Go backend
-  speech --> text  ──POST /api/chat──▶  Agent loop (Bedrock Converse, tool use)
-  audio  ◀─POST /api/speak─────────────  │  intent + disambiguation + confirm
+Browser (Web Speech API)                Go backend
+  speech -> text  ──POST /api/chat──▶   Agent loop (Bedrock Converse, tool use)
+                                         │  read-only tools run immediately
+                                         │  money-moving tools stop here ──┐
+  confirmation card ◀─── pending action ─┘                                  │
+  merchant taps Confirm ──POST /api/confirm──▶ run exactly that action ◀────┘
                                          ▼
-                             PayPal MCP server (npx @paypal/mcp)
+                             PayPal MCP server (@paypal/mcp)
                                          ▼
                              PayPal Sandbox: Invoicing API
+  spoken reply ◀──POST /api/speak── Amazon Polly
 ```
 
-- **Speech in** is handled in the browser (Web Speech API) in the selected
-  language, so there is no fragile server audio stream.
-- **The agent** is an Amazon Bedrock **Nova** model driven through the Converse
-  API with tool use. Each PayPal tool is surfaced to the model as a tool spec.
-- **PayPal** actions run through the official **PayPal MCP server**, which the
-  Go backend launches as a subprocess and drives over JSON-RPC (MCP). Tool
-  arguments from the model are treated as untrusted and checked against an
-  allow-list before any call.
-- **Speech out** uses Amazon Polly where a voice exists (German, English); Thai
-  gracefully falls back to text.
-- **The dashboard** panel is an AG Grid (Community) table of the merchant's
-  invoices, fed by `GET /api/invoices` (which calls the PayPal `list_invoices`
-  tool) and refreshed automatically after each voice command.
+- **The agent** is Amazon Bedrock **Nova Pro** driven through the Converse API
+  with tool use. Each PayPal tool is offered to the model as a tool spec.
+- **PayPal** actions run through the official **PayPal MCP server**, launched
+  by the Go backend as a subprocess and driven over JSON-RPC (MCP).
+- **Approval is enforced in code, not by prompt.** `create_invoice`,
+  `send_invoice` and `send_invoice_reminder` never run from the model's turn.
+  The agent stops and returns a pending action; the server keeps it under the
+  visitor's session with a random, single-use ID that expires after 10 minutes.
+  Only `POST /api/confirm` with that ID runs it. The browser never supplies the
+  action itself.
+- **The assistant can drive the screen.** A screen-only `show_invoices` tool
+  lets the agent open the invoice table with a status and customer filter. It
+  never contacts PayPal.
+- **Seller details come from configuration.** The model tends to invent a
+  business name and address; the server strips any seller fields it supplies
+  and fills them from `PAYPAL_MERCHANT_EMAIL` / `PAYPAL_MERCHANT_NAME`.
+- **Speech in** uses the browser's Web Speech API in the selected language.
+  **Speech out** uses Amazon Polly where a voice exists (English, German); Thai
+  falls back to text.
+- **PayPal tokens** are minted from the sandbox client ID and secret and
+  refreshed before they expire, restarting the MCP server with the new token.
 
-If no PayPal token is configured, PaySay runs in **demo mode** with an
-in-memory simulated PayPal provider, so the whole flow is runnable without a
-sandbox account.
+Without PayPal credentials, PaySay runs in **demo mode** with an in-memory
+simulated PayPal provider, clearly badged in the sidebar.
 
-## Technology & tools
+## Technology
 
 | Area | Technology |
 |------|-----------|
 | Backend | Go 1.27, standard-library `net/http` |
 | AI agent | Amazon Bedrock (Nova Pro) via the Converse API, tool use |
-| PayPal | Official PayPal Agent Toolkit / MCP server (`@paypal/mcp`), Invoicing API (sandbox) |
+| PayPal | PayPal Agent Toolkit / MCP server (`@paypal/mcp`), Invoicing API (sandbox) |
 | Protocol | Model Context Protocol (JSON-RPC 2.0 over stdio), hand-written Go client |
-| Speech | Browser Web Speech API (STT) + Amazon Polly (TTS) |
-| Dashboard | AG Grid (Community) invoice table, sortable/filterable |
-| Languages | English, German, Thai (one European + one Asian demo language) |
-| Frontend | Accessible vanilla JS/HTML/CSS, embedded in the Go binary |
-| Packaging | Docker multi-stage (Go + Node for the MCP server), docker compose |
+| Speech | Browser Web Speech API (speech to text), Amazon Polly (text to speech) |
+| Invoice table | AG Grid Community v33, self-hosted |
+| Languages | English, German, Thai |
+| Frontend | Vanilla JS/HTML/CSS embedded in the Go binary, no build step |
+| Packaging | Docker multi-stage (Go + Node for the MCP server), Docker Compose |
 
 ## Requirements
 
-- Docker (Colima or Docker Desktop) — the only requirement to run.
-- For local development without Docker: Go 1.27+ and Node 18+.
-- AWS credentials with `bedrock:InvokeModel` (and `polly:SynthesizeSpeech` for
-  TTS) for the agent to respond.
-- *(Optional)* A PayPal **sandbox** access token for real invoicing.
+- Docker (Colima or Docker Desktop).
+- AWS credentials with `bedrock:InvokeModel` and `polly:SynthesizeSpeech`.
+- *(Optional)* A PayPal **sandbox** app's client ID and secret for live
+  invoicing. Without them, PaySay runs in demo mode.
+- Chrome or Edge for voice input. Typing works in any browser.
 
 ## Quick start (Docker)
 
 ```bash
-cp .env.example .env     # fill in AWS creds; PayPal token optional
+cp .env.example .env     # add AWS credentials; PayPal sandbox app optional
 docker compose up --build
-# open http://localhost:8080
+# open http://localhost:8085  (set PORT in .env to change it)
 ```
 
-Use a Chromium-based browser for voice input (Web Speech API). You can also just
-type. Pick a language from the selector, then speak or type a request.
+With an AWS SSO profile, `make run-docker` exports temporary credentials into
+Compose for you (run `make login` first if the session expired).
 
 ## Local development
 
 ```bash
-cp .env.example .env
-set -a && source .env && set +a   # export env into your shell
-
-make run        # start the server on :8080 (go run)
-make test       # unit + integration tests
-make test-race  # tests with the race detector
-make vet        # static analysis
-make build      # binary at bin/paysay (web UI embedded)
+make run-docker   # Docker Compose with SSO credentials from AWS_PROFILE
+make test         # unit, integration and end-to-end tests (no network needed)
+make test-race    # the same with the race detector
+make vet          # static analysis
+make build        # binary at bin/paysay with the web UI embedded
+make help         # all targets
 ```
 
 ## Configuration
 
-All configuration is via environment variables (see `.env.example`). Key ones:
+All configuration is via environment variables (see `.env.example`).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AWS_REGION` | `us-east-1` | Region for Bedrock + Polly |
-| `BEDROCK_MODEL_ID` | `us.amazon.nova-pro-v1:0` | Agent model (use `nova-lite` for lower cost) |
+| `AWS_REGION` | `us-east-1` | Region for Bedrock and Polly |
+| `BEDROCK_MODEL_ID` | `us.amazon.nova-pro-v1:0` | Agent model |
 | `BEDROCK_MAX_TOKENS` | `2048` | Max output tokens per turn |
-| `PAYPAL_ACCESS_TOKEN` | *(empty)* | Sandbox token; empty = demo/mock mode |
+| `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` | *(empty)* | Sandbox app credentials; empty = demo mode |
 | `PAYPAL_ENVIRONMENT` | `SANDBOX` | `SANDBOX` or `PRODUCTION` |
+| `PAYPAL_MERCHANT_EMAIL` | *(empty)* | Sandbox business email used as the seller |
+| `PAYPAL_MERCHANT_NAME` | *(empty)* | Business name on invoices; empty = PayPal account profile |
 | `PAYSAY_SUPPORTED_LOCALES` | `en-US,de-DE,th-TH` | Enabled languages |
-| `VOICE_TTS_ENABLED` | `true` | Server-side Polly playback |
-| `SERVER_ADDR` | `:8080` | Listen address |
+| `VOICE_TTS_ENABLED` | `true` | Spoken replies via Polly |
+| `RATE_LIMIT_PER_MINUTE` | `10` | Chat and speech requests per visitor per minute (0 = off) |
+| `RATE_LIMIT_PER_HOUR` | `300` | Chat and speech requests across all visitors per hour (0 = off) |
+| `SERVER_ADDR` | `:8080` | Listen address inside the container |
 
-> Some Bedrock models require an inference profile id rather than a base model
-> id. If you get `on-demand throughput isn't supported`, run
-> `aws bedrock list-inference-profiles --region $AWS_REGION` and use that id.
+> Some Bedrock models need an inference profile ID rather than a base model
+> ID. If you get `on-demand throughput isn't supported`, run
+> `aws bedrock list-inference-profiles --region $AWS_REGION` and use that ID.
 
-## Getting a PayPal sandbox token
+## Connecting a PayPal sandbox account
 
-1. Sign in at <https://developer.paypal.com> and create/select an app.
+1. Sign in at <https://developer.paypal.com> and create or select an app.
 2. Copy the sandbox **Client ID** and **Secret**.
-3. Exchange them for an access token:
-   ```bash
-   curl -s https://api-m.sandbox.paypal.com/v1/oauth2/token \
-     -u "CLIENT_ID:SECRET" \
-     -d grant_type=client_credentials | jq -r .access_token
-   ```
-4. Put the token in `.env` as `PAYPAL_ACCESS_TOKEN` and restart.
+3. Put them in `.env` as `PAYPAL_CLIENT_ID` and `PAYPAL_SECRET`, set
+   `PAYPAL_MERCHANT_EMAIL` to the sandbox business account's email, and restart.
+
+The sidebar then shows **PayPal sandbox · live**. PayPal's sandbox does not
+deliver real emails; sent invoices appear under the sandbox account's
+notifications on developer.paypal.com.
 
 ## Project layout
 
 ```
-cmd/paysay          entrypoint: wiring + graceful shutdown
-internal/config       env configuration + validation
-internal/paypal       domain-level PayPal provider (+ mock)
-internal/paypal/mcp   MCP JSON-RPC stdio client (PayPal MCP server)
+cmd/paysay            entrypoint: wiring and graceful shutdown
+internal/config       environment configuration and validation
+internal/agent        the tool-use agent loop and the approval gate
 internal/bedrock      Bedrock Converse client wrapper
-internal/agent        the tool-use agent loop (the brain)
-internal/i18n         locale definitions + localized system prompts
-internal/voice        Polly text-to-speech (interface + impl)
-internal/server       HTTP handlers, security middleware, invoice dashboard API
-internal/web          embedded accessible web UI (incl. AG Grid, self-hosted)
-test/e2e              end-to-end flow test (agent + mock PayPal)
+internal/paypal       PayPal provider (live and mock), token refresh, argument shaping
+internal/paypal/mcp   MCP JSON-RPC stdio client
+internal/i18n         locales and localized system prompts
+internal/voice        Polly text to speech
+internal/server       HTTP API, approvals, sessions, rate limiting, security middleware
+internal/web          embedded web UI (HTML/CSS/JS, translations, icons, AG Grid)
+test/e2e              end-to-end flow: chat, approval, invoice created
 ```
 
-## Testing
+## Security
 
-```bash
-make test        # all tests (mocked Bedrock + PayPal, no network/credentials)
-make cover       # coverage summary
-```
-
-Tests cover the MCP JSON-RPC client, the agent tool-use loop, the PayPal
-allow-list and mock provider, locale/prompt localization, the HTTP layer
-(including security headers and locale detection), and an end-to-end
-voice-to-invoice flow.
-
-## Security notes
-
-- Tool arguments produced by the model are untrusted and re-validated against an
-  allow-list before any PayPal call; only invoice tools are exposed by default.
-- Access tokens are read from the environment and never logged; request bodies
-  (which may carry customer details) are never logged.
-- Security headers (CSP, `X-Content-Type-Options`, `X-Frame-Options`), a request
-  body size limit, a configurable CORS allow-list, and panic recovery are
-  applied to every request. The container runs as a non-root user.
+- Money-moving actions need an explicit approval tied to the visitor's session
+  (single use, 10-minute expiry); the model cannot run them itself.
+- Tool arguments from the model are untrusted: tools are checked against an
+  allow-list, and seller details are replaced with configured values.
+- Per-visitor and global rate limits cap AWS spend on a public deployment.
+- Credentials come from the environment and are never logged; request bodies,
+  which may contain customer details, are never logged.
+- CSP, `X-Content-Type-Options`, `X-Frame-Options`, a body size limit, a CORS
+  allow-list and panic recovery apply to every request. The container runs as
+  a non-root user.
+- Conversation history stays in the visitor's browser; the server keeps none.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
