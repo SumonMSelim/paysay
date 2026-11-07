@@ -726,11 +726,15 @@ async function sendMessage(text) {
 
     // The model API rejects blank turns, so a turn that only proposes an
     // action still needs text.
-    const proposed = data.pending ? data.pending.actions.map((a) => a.name).join(", ") : "";
-    const turnText = data.reply || (proposed ? `(Proposed ${proposed}; waiting for the merchant to approve.)` : "…");
     state.history.push({ role: "user", text });
-    // "text" goes back to the model; "reply" is what the merchant saw.
-    state.history.push({ role: "assistant", text: turnText, reply: data.reply || "", tool_calls: calls });
+    // Proposed actions travel back to the model as structured tool calls
+    // (with their outcome), never as text it could imitate.
+    state.history.push({
+      role: "assistant",
+      text: data.reply || "",
+      tool_calls: calls,
+      proposed: data.pending ? data.pending.actions : [],
+    });
     saveChat();
 
     // Refresh first so invoice cards in the reply show current data.
@@ -921,7 +925,10 @@ async function approve(pending, card) {
     const calls = (await res.json()).tool_calls || [];
 
     const last = state.history[state.history.length - 1];
-    if (last && last.role === "assistant") last.tool_calls = [...(last.tool_calls || []), ...calls];
+    if (last && last.role === "assistant") {
+      last.tool_calls = [...(last.tool_calls || []), ...calls];
+      last.proposed = [];
+    }
     saveChat();
 
     await refreshInvoices();
@@ -943,8 +950,6 @@ async function approve(pending, card) {
 function decline(pending, card) {
   const last = state.history[state.history.length - 1];
   if (last && last.role === "assistant") {
-    const names = (pending.actions || []).map((a) => a.name).join(", ");
-    last.text = `${last.text}\n(The merchant declined: ${names}.)`;
     last.declined = true;
     saveChat();
   }
@@ -955,7 +960,9 @@ function decline(pending, card) {
 
 // The conversation and activity log are kept in this browser only, so a
 // refresh does not lose context. The server keeps no chat history.
-const CHAT_KEY = "paysay.chat";
+// v2: history records proposed actions structurally; v1 chats held text
+// notes the model learned to imitate, so they are not restored.
+const CHAT_KEY = "paysay.chat.v2";
 const ACTIVITY_KEY = "paysay.activity";
 const MAX_SAVED_TURNS = 40; // 20 exchanges
 const MAX_SAVED_ACTIVITY = 50;
@@ -983,8 +990,7 @@ function restoreConversation() {
       appendUser(turn.text);
       continue;
     }
-    // Older saved turns have no "reply"; their text is what was shown.
-    const li = appendAssistant(turn.reply !== undefined ? turn.reply : turn.text, turn.tool_calls || []);
+    const li = appendAssistant(turn.text, turn.tool_calls || []);
     if (turn.declined) li.appendChild(el("div", "confirm-result", t("confirm.cancelled")));
   }
   els.welcome.hidden = state.history.length > 0;

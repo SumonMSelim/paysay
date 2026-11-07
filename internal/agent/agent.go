@@ -119,6 +119,11 @@ type Turn struct {
 	Role      string     `json:"role"` // "user" or "assistant"
 	Text      string     `json:"text"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// Proposed are money-moving calls shown for approval that did not run;
+	// approved ones move to ToolCalls. Declined reports the merchant
+	// cancelled them.
+	Proposed []ToolCall `json:"proposed,omitempty"`
+	Declined bool       `json:"declined,omitempty"`
 }
 
 // Result is the outcome of a single Respond call.
@@ -350,34 +355,81 @@ func buildInitialMessages(history []Turn, message string) []types.Message {
 	for len(history) > 0 && history[0].Role != "user" {
 		history = history[1:]
 	}
-	msgs := make([]types.Message, 0, len(history)+1)
-	for _, t := range history {
-		role := types.ConversationRoleUser
-		text := t.Text
-		if t.Role == "assistant" {
-			role = types.ConversationRoleAssistant
-			if len(t.ToolCalls) > 0 {
-				var summaries []string
-				for _, tc := range t.ToolCalls {
-					if tc.Output != "" {
-						summaries = append(summaries, fmt.Sprintf("[Action %s: %s]", tc.Name, truncate(tc.Output, maxToolOutputInTurn)))
-					}
-				}
-				if len(summaries) > 0 {
-					text = fmt.Sprintf("%s\n%s", text, strings.Join(summaries, "\n"))
-				}
-			}
+	msgs := make([]types.Message, 0, len(history)*2+1)
+	for i, t := range history {
+		if t.Role != "assistant" {
+			msgs = append(msgs, textMessage(types.ConversationRoleUser, t.Text))
+			continue
 		}
-		msgs = append(msgs, types.Message{
-			Role:    role,
-			Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: text}},
-		})
+		// Past actions are replayed as real tool-use and tool-result blocks.
+		// Summarizing them as text taught the model to type fake action
+		// records instead of calling tools.
+		if uses, results := historyToolBlocks(i, t); len(uses) > 0 {
+			msgs = append(msgs,
+				types.Message{Role: types.ConversationRoleAssistant, Content: uses},
+				types.Message{Role: types.ConversationRoleUser, Content: results},
+			)
+		}
+		msgs = append(msgs, textMessage(types.ConversationRoleAssistant, t.Text))
 	}
 	msgs = append(msgs, types.Message{
 		Role:    types.ConversationRoleUser,
 		Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: message}},
 	})
 	return msgs
+}
+
+// Results replayed for proposed actions that never ran.
+const (
+	declinedResult    = `{"status":"declined","note":"The merchant cancelled this action. Nothing was sent to PayPal."}`
+	notApprovedResult = `{"status":"not_approved","note":"The merchant did not approve this action, so it did not run."}`
+)
+
+// historyToolBlocks rebuilds a past turn's tool calls as tool-use blocks and
+// their matching results.
+func historyToolBlocks(turn int, t Turn) (uses, results []types.ContentBlock) {
+	add := func(n int, c ToolCall, output string, failed bool) {
+		input, err := jsonToDocument(c.Input)
+		if err != nil {
+			return
+		}
+		id := fmt.Sprintf("history-%d-%d", turn, n)
+		uses = append(uses, &types.ContentBlockMemberToolUse{Value: types.ToolUseBlock{
+			ToolUseId: aws.String(id), Name: aws.String(c.Name), Input: input,
+		}})
+		status := types.ToolResultStatusSuccess
+		if failed {
+			status = types.ToolResultStatusError
+		}
+		results = append(results, &types.ContentBlockMemberToolResult{Value: types.ToolResultBlock{
+			ToolUseId: aws.String(id),
+			Status:    status,
+			Content:   []types.ToolResultContentBlock{&types.ToolResultContentBlockMemberText{Value: truncate(output, maxToolOutputInTurn)}},
+		}})
+	}
+	n := 0
+	for _, c := range t.ToolCalls {
+		add(n, c, c.Output, c.IsError)
+		n++
+	}
+	for _, c := range t.Proposed {
+		out := notApprovedResult
+		if t.Declined {
+			out = declinedResult
+		}
+		add(n, c, out, false)
+		n++
+	}
+	return uses, results
+}
+
+// textMessage builds a single-text message. Bedrock rejects blank text, so an
+// empty turn becomes an ellipsis.
+func textMessage(role types.ConversationRole, text string) types.Message {
+	if strings.TrimSpace(text) == "" {
+		text = "…"
+	}
+	return types.Message{Role: role, Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: text}}}
 }
 
 // truncate shortens s to at most n bytes without splitting a UTF-8 character.

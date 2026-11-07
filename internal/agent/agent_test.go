@@ -202,37 +202,62 @@ func TestReplyStripsThinkingBlocks(t *testing.T) {
 	}
 }
 
-func TestBuildInitialMessagesPreservesToolOutputs(t *testing.T) {
+func TestBuildInitialMessagesReplaysToolCallsAsBlocks(t *testing.T) {
 	history := []Turn{
-		{
-			Role: "user",
-			Text: "Create an invoice for 50 USD",
-		},
+		{Role: "user", Text: "Create an invoice for 50 USD"},
 		{
 			Role: "assistant",
 			Text: "I created invoice INV2-TEST1234.",
-			ToolCalls: []ToolCall{
-				{
-					Name:   "create_invoice",
-					Output: `{"id":"INV2-TEST1234","status":"DRAFT"}`,
-				},
-			},
+			ToolCalls: []ToolCall{{
+				Name:   "create_invoice",
+				Input:  json.RawMessage(`{"currency_code":"USD"}`),
+				Output: `{"id":"INV2-TEST1234","status":"DRAFT"}`,
+			}},
 		},
 	}
 
 	msgs := buildInitialMessages(history, "Please send it")
-	if len(msgs) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	// user, assistant tool use, user tool result, assistant text, new user message
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(msgs))
 	}
-
-	asstMsg := msgs[1]
-	tb, ok := asstMsg.Content[0].(*types.ContentBlockMemberText)
+	if _, ok := msgs[1].Content[0].(*types.ContentBlockMemberToolUse); !ok {
+		t.Fatalf("message 1 = %T, want a tool-use block", msgs[1].Content[0])
+	}
+	res, ok := msgs[2].Content[0].(*types.ContentBlockMemberToolResult)
 	if !ok {
-		t.Fatalf("expected text content block, got %T", asstMsg.Content[0])
+		t.Fatalf("message 2 = %T, want a tool-result block", msgs[2].Content[0])
 	}
+	text := res.Value.Content[0].(*types.ToolResultContentBlockMemberText).Value
+	if !strings.Contains(text, "INV2-TEST1234") {
+		t.Errorf("tool result = %q, want the invoice output", text)
+	}
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			if tb, ok := c.(*types.ContentBlockMemberText); ok && strings.Contains(tb.Value, "[Action") {
+				t.Errorf("history contains a text action summary the model could imitate: %q", tb.Value)
+			}
+		}
+	}
+}
 
-	if !strings.Contains(tb.Value, "[Action create_invoice: {\"id\":\"INV2-TEST1234\",\"status\":\"DRAFT\"}]") {
-		t.Errorf("assistant turn did not contain tool action summary: %q", tb.Value)
+func TestBuildInitialMessagesMarksDeclinedProposal(t *testing.T) {
+	history := []Turn{
+		{Role: "user", Text: "Remind maria"},
+		{
+			Role:     "assistant",
+			Proposed: []ToolCall{{Name: "send_invoice_reminder", Input: json.RawMessage(`{"invoice_id":"INV2-A"}`)}},
+			Declined: true,
+		},
+	}
+	msgs := buildInitialMessages(history, "ok")
+	res := msgs[2].Content[0].(*types.ContentBlockMemberToolResult)
+	text := res.Value.Content[0].(*types.ToolResultContentBlockMemberText).Value
+	if !strings.Contains(text, "declined") {
+		t.Errorf("result = %q, want the decline recorded", text)
+	}
+	if tb := msgs[3].Content[0].(*types.ContentBlockMemberText); strings.TrimSpace(tb.Value) == "" {
+		t.Error("empty assistant text would be rejected by Bedrock")
 	}
 }
 
@@ -348,13 +373,15 @@ func TestBuildInitialMessagesBoundsHistory(t *testing.T) {
 	}
 	msgs := buildInitialMessages(history, "latest")
 
-	if len(msgs) != maxHistoryTurns+1 {
-		t.Fatalf("messages = %d, want %d (capped history + new message)", len(msgs), maxHistoryTurns+1)
+	// Each kept exchange is user, tool use, tool result, assistant text.
+	if want := maxHistoryTurns/2*4 + 1; len(msgs) != want {
+		t.Fatalf("messages = %d, want %d (capped history + new message)", len(msgs), want)
 	}
 	if msgs[0].Role != types.ConversationRoleUser {
 		t.Errorf("first message role = %s, want user", msgs[0].Role)
 	}
-	text := msgs[1].Content[0].(*types.ContentBlockMemberText).Value
+	res := msgs[2].Content[0].(*types.ContentBlockMemberToolResult)
+	text := res.Value.Content[0].(*types.ToolResultContentBlockMemberText).Value
 	if len(text) > maxToolOutputInTurn+100 {
 		t.Errorf("tool output in history is %d bytes, want it truncated", len(text))
 	}
