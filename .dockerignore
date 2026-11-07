@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+*.md
+!README.md
+/out
+/bin
+/paysay
+*.out
+coverage.*
+.idea
+.vscode
+.DS_Store

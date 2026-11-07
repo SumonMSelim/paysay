@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PaySay — Run your business by voice</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#composer">Skip to voice input</a>
+
+  <header class="app-header">
+    <h1 id="brand">PaySay</h1>
+    <p id="tagline" class="tagline">Run your business by voice.</p>
+    <p id="mode-badge" class="mode-badge" role="status" aria-live="polite"></p>
+  </header>
+
+  <main class="layout">
+    <section class="conversation-panel" aria-labelledby="conversation-heading">
+      <h2 id="conversation-heading" class="visually-hidden">Conversation</h2>
+
+      <div class="controls">
+        <label for="locale">Language</label>
+        <select id="locale" aria-describedby="locale-help"></select>
+        <span id="locale-help" class="visually-hidden">
+          Choose the language you want to speak and hear.
+        </span>
+      </div>
+
+      <ol id="messages" class="messages" aria-live="polite" aria-label="Conversation messages"></ol>
+
+      <form id="composer" class="composer" aria-label="Send a message to PaySay">
+        <label for="message" class="visually-hidden">Your message</label>
+        <input
+          id="message"
+          name="message"
+          type="text"
+          autocomplete="off"
+          placeholder="Speak or type, e.g. 'Create an invoice for 30 euros'"
+          aria-describedby="status"
+        />
+        <button id="mic" type="button" class="mic-button" aria-pressed="false"
+                aria-label="Start voice input">
+          <span aria-hidden="true">🎙️</span>
+        </button>
+        <button id="send" type="submit" class="send-button">Send</button>
+      </form>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <aside class="activity-panel" aria-labelledby="activity-heading">
+      <h2 id="activity-heading">Invoices</h2>
+      <p class="activity-help">
+        Your invoices update live as you talk. Click a column to sort, or use the
+        filters to find unpaid bills.
+      </p>
+      <div class="grid-toolbar">
+        <label for="status-filter">Show</label>
+        <select id="status-filter" aria-label="Filter invoices by status">
+          <option value="">All statuses</option>
+          <option value="DRAFT">Draft</option>
+          <option value="SENT">Sent</option>
+          <option value="UNPAID">Unpaid</option>
+          <option value="PAID">Paid</option>
+        </select>
+        <button id="refresh" type="button" class="refresh-button">Refresh</button>
+      </div>
+      <div id="invoice-grid" class="invoice-grid" role="region"
+           aria-label="Invoice table"></div>
+      <details class="tool-log">
+        <summary>Assistant actions</summary>
+        <ol id="tool-calls" class="tool-calls" aria-live="polite"></ol>
+      </details>
+    </aside>
+  </main>
+
+  <script src="/vendor/ag-grid-community.min.js"></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

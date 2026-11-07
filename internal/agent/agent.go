@@ -1,0 +1,363 @@
+// Package agent implements the PaySay conversational agent: a Bedrock Converse
+// tool-use loop that understands a merchant's natural-language request (in their
+// own language) and fulfills it by calling PayPal tools exposed over MCP.
+//
+// The loop is deliberately explicit and bounded. Each turn:
+//  1. Send the conversation + tool specs to Bedrock (Converse).
+//  2. If the model asks to use tools, validate and execute each tool via the
+//     PayPal ToolProvider, append the results, and loop.
+//  3. If the model returns a final text answer, return it.
+//
+// Safety properties baked in here:
+//   - Tool arguments produced by the model are treated as untrusted and are
+//     re-validated by the ToolProvider allow-list before any call.
+//   - The loop is bounded by MaxToolIterations to prevent runaway tool calls.
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+
+	"github.com/SumonMSelim/paysay/internal/bedrock"
+	"github.com/SumonMSelim/paysay/internal/i18n"
+	"github.com/SumonMSelim/paysay/internal/paypal"
+)
+
+// defaultMaxToolIterations bounds how many tool round-trips the agent will make
+// for a single user turn before giving up, preventing infinite tool loops.
+const defaultMaxToolIterations = 8
+
+// Agent orchestrates a Bedrock model and a PayPal tool provider.
+type Agent struct {
+	model     bedrock.Converser
+	tools     paypal.ToolProvider
+	modelID   string
+	maxTokens int32
+	temp      *float32
+	brandName string
+	maxIters  int
+
+	// toolCache stores the Bedrock tool configuration built from the provider's
+	// tool list. It is populated lazily on first use.
+	toolConfig *types.ToolConfiguration
+}
+
+// Options configures an Agent.
+type Options struct {
+	ModelID     string
+	MaxTokens   int32
+	Temperature *float32
+	BrandName   string
+	// MaxToolIterations overrides the default tool-loop bound when > 0.
+	MaxToolIterations int
+}
+
+// New creates an Agent.
+func New(model bedrock.Converser, tools paypal.ToolProvider, opts Options) *Agent {
+	iters := opts.MaxToolIterations
+	if iters <= 0 {
+		iters = defaultMaxToolIterations
+	}
+	brand := opts.BrandName
+	if brand == "" {
+		brand = "PaySay"
+	}
+	return &Agent{
+		model:     model,
+		tools:     tools,
+		modelID:   opts.ModelID,
+		maxTokens: opts.MaxTokens,
+		temp:      opts.Temperature,
+		brandName: brand,
+		maxIters:  iters,
+	}
+}
+
+// Turn represents one entry in the conversation history exchanged with the
+// client. Only user and assistant text is carried across turns at the API edge;
+// the richer Bedrock message structure (including tool-use blocks) is managed
+// internally within a single Respond call.
+type Turn struct {
+	Role string `json:"role"` // "user" or "assistant"
+	Text string `json:"text"`
+}
+
+// Result is the outcome of a single Respond call.
+type Result struct {
+	// Reply is the assistant's final natural-language reply in the merchant's
+	// language.
+	Reply string
+	// ToolCalls records which PayPal tools were invoked and with what result,
+	// for display and auditing in the UI.
+	ToolCalls []ToolCall
+}
+
+// ToolCall is an audit record of one executed tool.
+type ToolCall struct {
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input"`
+	Output  string          `json:"output"`
+	IsError bool            `json:"is_error"`
+}
+
+// Respond runs the full tool-use loop for one merchant message and returns the
+// assistant's reply. history is the prior conversation (may be empty); message
+// is the new merchant utterance; locale selects the reply language.
+func (a *Agent) Respond(ctx context.Context, history []Turn, message string, locale i18n.Locale) (*Result, error) {
+	toolConfig, err := a.ensureToolConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	messages := buildInitialMessages(history, message)
+	system := []types.SystemContentBlock{
+		&types.SystemContentBlockMemberText{Value: i18n.SystemPrompt(a.brandName, locale)},
+	}
+
+	result := &Result{}
+
+	for iter := 0; iter < a.maxIters; iter++ {
+		out, err := a.model.Converse(ctx, &bedrockruntime.ConverseInput{
+			ModelId:         aws.String(a.modelID),
+			Messages:        messages,
+			System:          system,
+			ToolConfig:      toolConfig,
+			InferenceConfig: a.inferenceConfig(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("agent: converse: %w", err)
+		}
+
+		assistantMsg, ok := outputMessage(out)
+		if !ok {
+			return nil, errors.New("agent: converse returned no output message")
+		}
+		// Record the assistant message in history so tool results can reference
+		// its tool-use IDs.
+		messages = append(messages, assistantMsg)
+
+		toolUses := extractToolUses(assistantMsg)
+		if len(toolUses) == 0 {
+			// No tools requested: this is the final answer.
+			result.Reply = extractText(assistantMsg)
+			return result, nil
+		}
+
+		// Execute each requested tool and build a single user message carrying
+		// all tool results, as the Converse API expects.
+		toolResultBlocks := make([]types.ContentBlock, 0, len(toolUses))
+		for _, tu := range toolUses {
+			call, block := a.runTool(ctx, tu)
+			result.ToolCalls = append(result.ToolCalls, call)
+			toolResultBlocks = append(toolResultBlocks, block)
+		}
+		messages = append(messages, types.Message{
+			Role:    types.ConversationRoleUser,
+			Content: toolResultBlocks,
+		})
+	}
+
+	return nil, fmt.Errorf("agent: exceeded max tool iterations (%d)", a.maxIters)
+}
+
+// runTool executes one tool-use request and returns both the audit record and
+// the Bedrock tool-result content block to feed back to the model.
+func (a *Agent) runTool(ctx context.Context, tu types.ToolUseBlock) (ToolCall, types.ContentBlock) {
+	name := aws.ToString(tu.Name)
+	toolUseID := aws.ToString(tu.ToolUseId)
+
+	// Convert the model-produced input document to JSON. This is untrusted
+	// input; the ToolProvider re-validates the tool name against its allow-list.
+	argsJSON, marshalErr := documentToJSON(tu.Input)
+
+	call := ToolCall{Name: name, Input: argsJSON}
+
+	var resultText string
+	var isError bool
+	if marshalErr != nil {
+		resultText = fmt.Sprintf(`{"error":"could not read tool input: %s"}`, marshalErr)
+		isError = true
+	} else {
+		res, err := a.tools.Invoke(ctx, name, argsJSON)
+		if err != nil {
+			resultText = fmt.Sprintf(`{"error":%q}`, err.Error())
+			isError = true
+		} else {
+			resultText = res.Text
+			isError = res.IsError
+		}
+	}
+
+	call.Output = resultText
+	call.IsError = isError
+
+	status := types.ToolResultStatusSuccess
+	if isError {
+		status = types.ToolResultStatusError
+	}
+
+	block := &types.ContentBlockMemberToolResult{
+		Value: types.ToolResultBlock{
+			ToolUseId: aws.String(toolUseID),
+			Status:    status,
+			Content: []types.ToolResultContentBlock{
+				&types.ToolResultContentBlockMemberText{Value: resultText},
+			},
+		},
+	}
+	return call, block
+}
+
+// ensureToolConfig lazily builds the Bedrock ToolConfiguration from the PayPal
+// provider's advertised tools.
+func (a *Agent) ensureToolConfig(ctx context.Context) (*types.ToolConfiguration, error) {
+	if a.toolConfig != nil {
+		return a.toolConfig, nil
+	}
+	descs, err := a.tools.Tools(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("agent: list tools: %w", err)
+	}
+	if len(descs) == 0 {
+		return nil, errors.New("agent: no PayPal tools available")
+	}
+
+	tools := make([]types.Tool, 0, len(descs))
+	for _, d := range descs {
+		schemaDoc, err := jsonToDocument(d.InputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("agent: tool %q schema: %w", d.Name, err)
+		}
+		tools = append(tools, &types.ToolMemberToolSpec{
+			Value: types.ToolSpecification{
+				Name:        aws.String(d.Name),
+				Description: aws.String(d.Description),
+				InputSchema: &types.ToolInputSchemaMemberJson{Value: schemaDoc},
+			},
+		})
+	}
+	a.toolConfig = &types.ToolConfiguration{Tools: tools}
+	return a.toolConfig, nil
+}
+
+func (a *Agent) inferenceConfig() *types.InferenceConfiguration {
+	ic := &types.InferenceConfiguration{
+		// Always set MaxTokens explicitly; leaving it unset reserves the model's
+		// maximum and can trigger throttling.
+		MaxTokens: aws.Int32(a.maxTokens),
+	}
+	if a.temp != nil {
+		ic.Temperature = a.temp
+	}
+	return ic
+}
+
+// --- message/document helpers ---
+
+func buildInitialMessages(history []Turn, message string) []types.Message {
+	msgs := make([]types.Message, 0, len(history)+1)
+	for _, t := range history {
+		role := types.ConversationRoleUser
+		if t.Role == "assistant" {
+			role = types.ConversationRoleAssistant
+		}
+		msgs = append(msgs, types.Message{
+			Role:    role,
+			Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: t.Text}},
+		})
+	}
+	msgs = append(msgs, types.Message{
+		Role:    types.ConversationRoleUser,
+		Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: message}},
+	})
+	return msgs
+}
+
+func outputMessage(out *bedrockruntime.ConverseOutput) (types.Message, bool) {
+	if out == nil || out.Output == nil {
+		return types.Message{}, false
+	}
+	m, ok := out.Output.(*types.ConverseOutputMemberMessage)
+	if !ok {
+		return types.Message{}, false
+	}
+	return m.Value, true
+}
+
+func extractToolUses(m types.Message) []types.ToolUseBlock {
+	var uses []types.ToolUseBlock
+	for _, c := range m.Content {
+		if tu, ok := c.(*types.ContentBlockMemberToolUse); ok {
+			uses = append(uses, tu.Value)
+		}
+	}
+	return uses
+}
+
+func extractText(m types.Message) string {
+	var text string
+	for _, c := range m.Content {
+		if t, ok := c.(*types.ContentBlockMemberText); ok {
+			if text != "" {
+				text += "\n"
+			}
+			text += t.Value
+		}
+	}
+	return cleanReply(text)
+}
+
+// thinkingBlock matches a model's internal reasoning wrapped in <thinking>...
+// </thinking> tags. Some models (including Nova) emit these; they must never
+// reach the merchant, who may hear the reply read aloud.
+var thinkingBlock = regexp.MustCompile(`(?is)<thinking>.*?</thinking>`)
+
+// cleanReply strips internal reasoning blocks and trims surrounding whitespace
+// so only the user-facing answer remains.
+func cleanReply(s string) string {
+	s = thinkingBlock.ReplaceAllString(s, "")
+	// Remove any stray, unmatched thinking tags left by truncation.
+	s = strings.ReplaceAll(s, "<thinking>", "")
+	s = strings.ReplaceAll(s, "</thinking>", "")
+	return strings.TrimSpace(s)
+}
+
+// jsonToDocument converts a raw JSON schema/value into the Bedrock document
+// type used for tool input schemas and tool-use inputs.
+func jsonToDocument(raw json.RawMessage) (brtypes.Interface, error) {
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return brtypes.NewLazyDocument(v), nil
+}
+
+// documentToJSON serializes a Bedrock document (the model's tool-use input) back
+// to raw JSON for passing to the PayPal tool. MarshalSmithyDocument yields the
+// document's JSON encoding directly, which is exactly the form PayPal tools
+// expect for their arguments.
+func documentToJSON(doc brtypes.Interface) (json.RawMessage, error) {
+	if doc == nil {
+		return json.RawMessage(`{}`), nil
+	}
+	b, err := doc.MarshalSmithyDocument()
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	return json.RawMessage(b), nil
+}

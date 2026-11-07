@@ -1,0 +1,23 @@
+# Binaries
+/paysay
+/bin/
+/out/
+*.exe
+
+# Environment and secrets
+.env
+*.pem
+*.key
+
+# Go
+/vendor/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Test and coverage artifacts
+*.out
+coverage.*
