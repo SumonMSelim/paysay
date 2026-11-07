@@ -12,6 +12,7 @@ import (
 type fakeMCP struct {
 	tools      []mcp.Tool
 	lastCall   string
+	lastArgs   json.RawMessage
 	callResult *mcp.CallToolResult
 }
 
@@ -21,6 +22,7 @@ func (f *fakeMCP) Initialize(ctx context.Context) (*mcp.InitializeResult, error)
 func (f *fakeMCP) ListTools(ctx context.Context) ([]mcp.Tool, error) { return f.tools, nil }
 func (f *fakeMCP) CallTool(ctx context.Context, name string, args json.RawMessage) (*mcp.CallToolResult, error) {
 	f.lastCall = name
+	f.lastArgs = args
 	if f.callResult != nil {
 		return f.callResult, nil
 	}
@@ -168,5 +170,26 @@ func TestMockCreateInvoiceHandlesNestedUnitAmount(t *testing.T) {
 	_ = json.Unmarshal([]byte(res.Text), &inv)
 	if inv.Total != "30.00" {
 		t.Errorf("derived total = %q, want 30.00", inv.Total)
+	}
+}
+
+func TestServiceCreateInvoiceScrubsSellerDetails(t *testing.T) {
+	fm := &fakeMCP{}
+	svc := newServiceWithClient(fm, WithMerchantEmail("shop@sandbox.example"))
+
+	args := json.RawMessage(`{"currency_code":"EUR","invoicer_business_name":"Merchant's Business Name",
+		"primary_recipients":[{"billing_info":{"email_address":"buyer@example.com"}}]}`)
+	if _, err := svc.Invoke(context.Background(), "create_invoice", args); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(fm.lastArgs, &sent); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := sent["invoicer_business_name"]; ok {
+		t.Error("invented business name reached PayPal")
+	}
+	if sent["invoicer_email_address"] != "shop@sandbox.example" {
+		t.Errorf("invoicer email = %v, want configured merchant", sent["invoicer_email_address"])
 	}
 }

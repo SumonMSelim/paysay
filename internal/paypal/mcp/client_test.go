@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -196,5 +197,32 @@ func TestCallToolPropagatesRPCError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("error = %v, want it to contain boom", err)
+	}
+}
+
+func TestServerExitFailsEveryWaitingCall(t *testing.T) {
+	// The server never answers tools/call, then its output closes, as when the
+	// MCP process dies mid-request.
+	fs := newFakeServer(func(req map[string]any) map[string]any { return nil })
+	c := NewClient(fs)
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	errs := make(chan error, 3)
+	for i := 0; i < 3; i++ {
+		go func() {
+			_, err := c.CallTool(ctx, "list_invoices", nil)
+			errs <- err
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	_ = fs.clientReads.Close()
+
+	for i := 0; i < 3; i++ {
+		if err := <-errs; !errors.Is(err, ErrTransportClosed) {
+			t.Errorf("call %d: err = %v, want ErrTransportClosed (not a hang until timeout)", i, err)
+		}
 	}
 }

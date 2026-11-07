@@ -21,14 +21,16 @@ type Brand struct {
 }
 
 // PayPal holds the configuration needed to launch and authenticate the PayPal
-// MCP server subprocess. AccessToken is a sandbox OAuth2 token; it is never
-// logged.
+// MCP server subprocess. Access tokens are minted from the client credentials
+// at runtime and refreshed before expiry; the secret is never logged.
 type PayPal struct {
-	AccessToken   string   // PAYPAL_ACCESS_TOKEN (sandbox bearer token)
+	ClientID      string   // PAYPAL_CLIENT_ID
+	ClientSecret  string   // PAYPAL_SECRET
 	Environment   string   // SANDBOX or PRODUCTION
 	MCPCommand    string   // command to launch the MCP server (default: npx)
 	MCPArgs       []string // args for the MCP server launch
 	MerchantEmail string   // sandbox business email used as the invoicer
+	MerchantName  string   // business name printed on invoices (optional)
 }
 
 // Bedrock holds Amazon Bedrock model selection and inference parameters. ModelID
@@ -64,6 +66,11 @@ type Server struct {
 	ShutdownTimeout time.Duration
 	// AllowedOrigins is the CORS allow-list for the browser demo UI.
 	AllowedOrigins []string
+	// RateLimitPerMinute caps chat and speech requests per client per minute;
+	// RateLimitPerHour caps them across all clients per hour. These bound AWS
+	// spend on a public demo. Zero disables a limit.
+	RateLimitPerMinute int
+	RateLimitPerHour   int
 }
 
 // Config is the fully-resolved application configuration.
@@ -90,6 +97,8 @@ const (
 	defaultAddr         = ":8080"
 	defaultLocale       = "en-US"
 	defaultSampleRateHz = 16000
+	defaultRatePerMin   = 10
+	defaultRatePerHour  = 300
 )
 
 // defaultMCPArgs launches the official PayPal MCP server with all tools enabled.
@@ -110,11 +119,13 @@ func Load() (*Config, error) {
 			Tagline: getEnv("PAYSAY_BRAND_TAGLINE", defaultBrandTagline),
 		},
 		PayPal: PayPal{
-			AccessToken:   os.Getenv("PAYPAL_ACCESS_TOKEN"),
+			ClientID:      os.Getenv("PAYPAL_CLIENT_ID"),
+			ClientSecret:  os.Getenv("PAYPAL_SECRET"),
 			Environment:   strings.ToUpper(getEnv("PAYPAL_ENVIRONMENT", defaultEnvironment)),
 			MCPCommand:    getEnv("PAYPAL_MCP_COMMAND", defaultMCPCommand),
 			MCPArgs:       defaultMCPArgs,
 			MerchantEmail: os.Getenv("PAYPAL_MERCHANT_EMAIL"),
+			MerchantName:  os.Getenv("PAYPAL_MERCHANT_NAME"),
 		},
 		Bedrock: Bedrock{
 			ModelID:   getEnv("BEDROCK_MODEL_ID", defaultModelID),
@@ -134,6 +145,9 @@ func Load() (*Config, error) {
 			WriteTimeout:    getEnvDuration("SERVER_WRITE_TIMEOUT", 60*time.Second),
 			ShutdownTimeout: getEnvDuration("SERVER_SHUTDOWN_TIMEOUT", 15*time.Second),
 			AllowedOrigins:  getEnvList("SERVER_ALLOWED_ORIGINS", []string{"*"}),
+
+			RateLimitPerMinute: getEnvInt("RATE_LIMIT_PER_MINUTE", defaultRatePerMin),
+			RateLimitPerHour:   getEnvInt("RATE_LIMIT_PER_HOUR", defaultRatePerHour),
 		},
 		DefaultLocale:    getEnv("PAYSAY_DEFAULT_LOCALE", defaultLocale),
 		SupportedLocales: getEnvList("PAYSAY_SUPPORTED_LOCALES", defaultSupportedLocales),
@@ -170,6 +184,9 @@ func (c *Config) Validate() error {
 	if c.AWS.Region == "" {
 		errs = append(errs, "AWS_REGION must not be empty")
 	}
+	if c.Server.RateLimitPerMinute < 0 || c.Server.RateLimitPerHour < 0 {
+		errs = append(errs, "RATE_LIMIT_PER_MINUTE and RATE_LIMIT_PER_HOUR must not be negative")
+	}
 	if !contains(c.SupportedLocales, c.DefaultLocale) {
 		errs = append(errs, fmt.Sprintf("default locale %q is not in supported locales %v", c.DefaultLocale, c.SupportedLocales))
 	}
@@ -180,16 +197,16 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ErrMissingPayPalToken indicates live PayPal calls are not possible.
-var ErrMissingPayPalToken = errors.New("PAYPAL_ACCESS_TOKEN is not set")
+// ErrMissingPayPalCredentials indicates live PayPal calls are not possible.
+var ErrMissingPayPalCredentials = errors.New("PAYPAL_CLIENT_ID and PAYPAL_SECRET are not set")
 
 // RequireLiveCredentials returns an error if credentials needed for live PayPal
 // calls are missing. Callers use this to decide between live and mock modes.
 func (c *Config) RequireLiveCredentials() error {
-	if strings.TrimSpace(c.PayPal.AccessToken) == "" {
-		return ErrMissingPayPalToken
+	if strings.TrimSpace(c.PayPal.ClientID) != "" && strings.TrimSpace(c.PayPal.ClientSecret) != "" {
+		return nil
 	}
-	return nil
+	return ErrMissingPayPalCredentials
 }
 
 // --- env helpers ---

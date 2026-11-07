@@ -24,6 +24,10 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Bedrock.MaxTokens != defaultMaxTokens {
 		t.Errorf("max tokens = %d, want %d", cfg.Bedrock.MaxTokens, defaultMaxTokens)
 	}
+	if cfg.Server.RateLimitPerMinute != defaultRatePerMin || cfg.Server.RateLimitPerHour != defaultRatePerHour {
+		t.Errorf("rate limits = %d/min %d/h, want %d/min %d/h",
+			cfg.Server.RateLimitPerMinute, cfg.Server.RateLimitPerHour, defaultRatePerMin, defaultRatePerHour)
+	}
 	if len(cfg.PayPal.MCPArgs) == 0 || cfg.PayPal.MCPArgs[1] != "@paypal/mcp" {
 		t.Errorf("unexpected MCP args: %v", cfg.PayPal.MCPArgs)
 	}
@@ -80,21 +84,38 @@ func TestValidateRejectsUnsupportedDefaultLocale(t *testing.T) {
 }
 
 func TestRequireLiveCredentials(t *testing.T) {
-	t.Setenv("PAYPAL_ACCESS_TOKEN", "")
+	t.Setenv("PAYPAL_CLIENT_ID", "")
+	t.Setenv("PAYPAL_SECRET", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
 	if err := cfg.RequireLiveCredentials(); err == nil {
-		t.Error("expected ErrMissingPayPalToken when token absent")
+		t.Error("expected ErrMissingPayPalCredentials when credentials absent")
 	}
 
-	t.Setenv("PAYPAL_ACCESS_TOKEN", "A21AA-sandbox-token")
+	t.Setenv("PAYPAL_CLIENT_ID", "sandbox-client")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if err := cfg.RequireLiveCredentials(); err == nil {
+		t.Error("expected an error when only the client ID is set")
+	}
+
+	t.Setenv("PAYPAL_SECRET", "sandbox-secret")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
 	if err := cfg.RequireLiveCredentials(); err != nil {
-		t.Errorf("unexpected error with token present: %v", err)
+		t.Errorf("unexpected error with credentials present: %v", err)
+	}
+}
+
+func TestValidateRejectsNegativeRateLimit(t *testing.T) {
+	t.Setenv("RATE_LIMIT_PER_HOUR", "-1")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for negative rate limit")
 	}
 }

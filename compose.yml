@@ -4,7 +4,7 @@
 #   cp .env.example .env     # fill in AWS + (optional) PayPal sandbox values
 #   docker compose up --build
 #
-# With no PAYPAL_ACCESS_TOKEN set, PaySay starts in demo mode with a simulated
+# With no PAYPAL_CLIENT_ID/PAYPAL_SECRET set, PaySay starts in demo mode with a simulated
 # PayPal provider so the full voice -> agent -> invoice flow is runnable without
 # a sandbox account. Provide AWS credentials for the Bedrock agent to respond.
 
@@ -12,7 +12,7 @@ services:
   paysay:
     build: .
     ports:
-      - "8080:8080"
+      - "${PORT:-8085}:8080"
     environment:
       # --- AWS / Bedrock (required for the agent to respond) ---
       AWS_REGION: ${AWS_REGION:-us-east-1}
@@ -23,9 +23,11 @@ services:
       BEDROCK_MAX_TOKENS: ${BEDROCK_MAX_TOKENS:-2048}
 
       # --- PayPal (optional; omit to run in demo/mock mode) ---
-      PAYPAL_ACCESS_TOKEN: ${PAYPAL_ACCESS_TOKEN:-}
+      PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID:-}
+      PAYPAL_SECRET: ${PAYPAL_SECRET:-}
       PAYPAL_ENVIRONMENT: ${PAYPAL_ENVIRONMENT:-SANDBOX}
       PAYPAL_MERCHANT_EMAIL: ${PAYPAL_MERCHANT_EMAIL:-}
+      PAYPAL_MERCHANT_NAME: ${PAYPAL_MERCHANT_NAME:-}
 
       # --- App ---
       PAYSAY_DEFAULT_LOCALE: ${PAYSAY_DEFAULT_LOCALE:-en-US}

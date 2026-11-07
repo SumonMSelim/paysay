@@ -75,6 +75,11 @@ func (m *MockProvider) Tools(ctx context.Context) ([]ToolDescriptor, error) {
 			Description: "Send a payment reminder for a sent, unpaid invoice.",
 			InputSchema: schema(`{"type":"object","properties":{"invoice_id":{"type":"string"}},"required":["invoice_id"]}`),
 		},
+		{
+			Name:        "generate_invoice_qr_code",
+			Description: "Generate a scannable QR code for customer mobile payment of an invoice.",
+			InputSchema: schema(`{"type":"object","properties":{"invoice_id":{"type":"string"},"width":{"type":"number"},"height":{"type":"number"}},"required":["invoice_id"]}`),
+		},
 	}, nil
 }
 
@@ -94,6 +99,8 @@ func (m *MockProvider) Invoke(ctx context.Context, name string, args json.RawMes
 		return m.listInvoices(args)
 	case "get_invoice":
 		return m.getInvoice(args)
+	case "generate_invoice_qr_code":
+		return m.generateQRCode(args)
 	default:
 		return ToolResult{IsError: true, Text: fmt.Sprintf(`{"error":"unknown tool %q"}`, name)}, nil
 	}
@@ -241,6 +248,24 @@ func (m *MockProvider) getInvoice(args json.RawMessage) (ToolResult, error) {
 		return notFound(id)
 	}
 	return marshalResult(inv)
+}
+
+func (m *MockProvider) generateQRCode(args json.RawMessage) (ToolResult, error) {
+	id := invoiceID(args)
+	inv, ok := m.invoices[id]
+	if !ok {
+		return notFound(id)
+	}
+	// Return a standard payment URI and demo SVG payload for instant scanning
+	payURL := fmt.Sprintf("https://www.sandbox.paypal.com/invoice/p/#%s", inv.ID)
+	return marshalResult(map[string]any{
+		"invoice_id":   inv.ID,
+		"qr_image_url": fmt.Sprintf("https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=%s", payURL),
+		"payment_url":  payURL,
+		"status":       inv.Status,
+		"total":        inv.Total,
+		"currency":     inv.Currency,
+	})
 }
 
 // --- helpers ---

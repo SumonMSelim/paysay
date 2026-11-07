@@ -53,9 +53,11 @@ type mcpClient interface {
 
 // Service is the live ToolProvider backed by the PayPal MCP server.
 type Service struct {
-	client   mcpClient
-	closers  []func() error
-	allowSet map[string]bool // optional allow-list of tool names
+	client        mcpClient
+	closers       []func() error
+	allowSet      map[string]bool // optional allow-list of tool names
+	merchantEmail string          // optional default merchant email for invoicing
+	merchantName  string          // optional business name printed on invoices
 }
 
 // Option configures a Service.
@@ -70,6 +72,20 @@ func WithAllowedTools(names ...string) Option {
 		for _, n := range names {
 			s.allowSet[n] = true
 		}
+	}
+}
+
+// WithMerchantEmail configures the fallback invoicer/merchant email.
+func WithMerchantEmail(email string) Option {
+	return func(s *Service) {
+		s.merchantEmail = email
+	}
+}
+
+// WithMerchantName configures the business name printed on invoices.
+func WithMerchantName(name string) Option {
+	return func(s *Service) {
+		s.merchantName = name
 	}
 }
 
@@ -146,7 +162,13 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	if s.allowSet != nil && !s.allowSet[name] {
 		return ToolResult{}, fmt.Errorf("paypal: tool %q is not allowed", name)
 	}
-	res, err := s.client.CallTool(ctx, name, args)
+
+	shapedArgs := args
+	if name == "create_invoice" {
+		shapedArgs = ScrubInvoicer(ShapeCreateInvoiceArgs(args, s.merchantEmail), s.merchantEmail, s.merchantName)
+	}
+
+	res, err := s.client.CallTool(ctx, name, shapedArgs)
 	if err != nil {
 		return ToolResult{}, err
 	}
@@ -162,6 +184,14 @@ func (s *Service) Close() error {
 		}
 	}
 	return firstErr
+}
+
+// ApprovalTools create invoices or contact customers. The agent never runs
+// them on its own; each one needs the merchant's explicit approval.
+var ApprovalTools = []string{
+	"create_invoice",
+	"send_invoice",
+	"send_invoice_reminder",
 }
 
 // InvoiceTools is the default safe allow-list for the merchant-invoicing use
