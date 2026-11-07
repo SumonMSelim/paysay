@@ -46,7 +46,7 @@ var registry = map[string]Locale{
 		TranscribeCode:    "de-DE",
 		PollyVoiceID:      "Vicki",
 		DefaultCurrency:   "EUR",
-		SystemInstruction: "Antworte dem Händler auf Deutsch, klar und freundlich. Verwende Euro als Standardwährung, sofern nichts anderes gesagt wird.",
+		SystemInstruction: "Antworte dem Händler auf Deutsch, klar und freundlich, und sprich ihn mit „Sie“ an. Verwende Euro als Standardwährung, sofern nichts anderes gesagt wird. Nenne einen Entwurf nie „offen“ oder „unbezahlt“, sondern „noch nicht versendet“; „offen“ bedeutet versendet und noch nicht bezahlt.",
 	},
 	"th-TH": {
 		Tag:            "th-TH",

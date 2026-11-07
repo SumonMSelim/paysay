@@ -79,3 +79,21 @@ func TestDetectLocaleHint(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemPromptExplainsInvoiceStatuses(t *testing.T) {
+	p := SystemPrompt("PaySay", MustGet("en-US"))
+	for _, want := range []string{"DRAFT means created but not sent yet", "customer and amount with currency", "a draft that was never sent", "runs only if they approve"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+}
+
+func TestGermanInstructionUsesFormalAddressAndDraftWording(t *testing.T) {
+	de := MustGet("de-DE").SystemInstruction
+	for _, want := range []string{"„Sie“", "noch nicht versendet"} {
+		if !strings.Contains(de, want) {
+			t.Errorf("German instruction missing %q", want)
+		}
+	}
+}
