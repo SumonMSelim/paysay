@@ -29,6 +29,7 @@ type toolResult struct {
 // mock provider and the real PayPal Invoicing v2 response.
 type InvoiceRow struct {
 	ID       string `json:"id"`
+	Number   string `json:"number"`
 	Status   string `json:"status"`
 	Customer string `json:"customer"`
 	Amount   string `json:"amount"`
@@ -143,12 +144,14 @@ type rawInvoice struct {
 	CurrencyFlat string `json:"currency_code"`
 	Total        string `json:"total"`
 	CreateTime   string `json:"create_time"`
+	NumberFlat   string `json:"invoice_number"`
 
 	// PayPal v2 (nested) shape.
 	Detail struct {
-		CurrencyCode string `json:"currency_code"`
-		CreateTime   string `json:"create_time"`
-		Metadata     struct {
+		CurrencyCode  string `json:"currency_code"`
+		CreateTime    string `json:"create_time"`
+		InvoiceNumber string `json:"invoice_number"`
+		Metadata      struct {
 			CreateTime string `json:"create_time"`
 		} `json:"metadata"`
 	} `json:"detail"`
@@ -172,6 +175,10 @@ func normalizeInvoices(raw string) []InvoiceRow {
 	rows := make([]InvoiceRow, 0, len(list.Items))
 	for _, it := range list.Items {
 		row := InvoiceRow{ID: it.ID, Status: it.Status}
+
+		// Number: the merchant-facing invoice number (e.g. "0007"), distinct
+		// from the resource ID. Live PayPal puts it under detail.invoice_number.
+		row.Number = firstNonEmpty(it.NumberFlat, it.Detail.InvoiceNumber)
 
 		// Customer: mock flat field, else first primary recipient email.
 		row.Customer = it.Recipient

@@ -119,3 +119,31 @@ func TestValidateRejectsNegativeRateLimit(t *testing.T) {
 		t.Fatal("expected error for negative rate limit")
 	}
 }
+
+func TestCollectionsTokenValidation(t *testing.T) {
+	// Unset is valid and leaves the token empty (endpoint disabled).
+	t.Setenv("COLLECTIONS_TOKEN", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error with unset token: %v", err)
+	}
+	if cfg.CollectionsToken != "" {
+		t.Errorf("token = %q, want empty", cfg.CollectionsToken)
+	}
+
+	// A short token is rejected.
+	t.Setenv("COLLECTIONS_TOKEN", "short")
+	if _, err := Load(); err == nil {
+		t.Error("expected error for a too-short collections token")
+	}
+
+	// A sufficiently long token is accepted and preserved.
+	t.Setenv("COLLECTIONS_TOKEN", "a-sufficiently-long-secret")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error with valid token: %v", err)
+	}
+	if cfg.CollectionsToken != "a-sufficiently-long-secret" {
+		t.Errorf("token = %q, want preserved", cfg.CollectionsToken)
+	}
+}

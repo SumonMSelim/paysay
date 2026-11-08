@@ -143,6 +143,7 @@ All configuration is via environment variables (see `.env.example`).
 | `RATE_LIMIT_PER_MINUTE` | `10` | Chat and speech requests per visitor per minute (0 = off) |
 | `RATE_LIMIT_PER_HOUR` | `300` | Chat and speech requests across all visitors per hour (0 = off) |
 | `SERVER_ADDR` | `:8080` | Listen address inside the container |
+| `COLLECTIONS_TOKEN` | *(empty)* | Shared secret for the daily collections endpoint; empty = endpoint disabled (404). At least 16 characters when set |
 
 > Some Bedrock models need an inference profile ID rather than a base model
 > ID. If you get `on-demand throughput isn't supported`, run
@@ -159,6 +160,61 @@ The sidebar then shows **PayPal sandbox · live**. PayPal's sandbox does not
 deliver real emails; sent invoices appear under the sandbox account's
 notifications on developer.paypal.com.
 
+## Daily collections check
+
+A scheduled job checks once a day which invoices still need chasing, so the
+merchant does not have to. It is a **Render Workflow**, triggered daily by a
+**Render Cron Job**, and it lives in `jobs/collections/` (TypeScript, Node 22).
+
+Each run:
+
+1. Reads the merchant's invoices from the app's `GET /api/invoices` and picks
+   the sent-but-unpaid ones (`SENT`, `UNPAID`, `PARTIALLY_PAID`) created more
+   than three days ago. Drafts are never chased.
+2. Cross-checks PayPal **Transaction Search** over the last 31 days (through the
+   APIMatic-generated PayPal TypeScript SDK) so a customer who already paid is
+   not reminded. Matching is on the transaction's `invoice_id` with a completed
+   (`S`) status.
+3. Posts the result to the app's internal endpoint. The merchant then sees an
+   Overview card, *"Daily check: N invoices to chase"*, with one **Approve**
+   button.
+
+The job never sends reminders itself. Approval goes through the same
+confirmation gate as every other money-moving action: the Approve button reuses
+the existing confirmation card and `POST /api/confirm`.
+
+If Transaction Search is unavailable (for example a 403 because the feature is
+not enabled on the PayPal app), the job still posts a plan with no skips and
+logs a warning, rather than failing.
+
+> **Transaction Search caveats.** The PayPal sandbox app must have the
+> **Transaction Search** feature enabled (developer.paypal.com → your app →
+> Features). Sandbox transactions can also take up to about **3 hours** to
+> become searchable, so a very recent payment may not be reconciled on the
+> next run.
+
+The job and the app share the `COLLECTIONS_TOKEN` secret. The job also needs:
+
+| Variable | Purpose |
+|----------|---------|
+| `APP_URL` | Base URL of the PaySay app, e.g. `https://paysay.onrender.com` |
+| `COLLECTIONS_TOKEN` | Shared secret presented to the internal collections endpoint |
+| `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` | Sandbox app credentials for Transaction Search |
+| `PAYPAL_ENVIRONMENT` | `SANDBOX` (default) or `PRODUCTION` |
+| `RENDER_API_KEY` | *(cron only)* Triggers the workflow run |
+| `WORKFLOW_SLUG` | *(cron only)* The workflow service's slug |
+
+Deployment is described in `render.yaml` (a Render Blueprint). Render Workflows
+can be declared in a Blueprint, so all three services (web, workflow, cron) are
+defined there.
+
+Run the job's checks locally with Docker:
+
+```bash
+cd jobs/collections
+docker run --rm -v "$PWD":/job -w /job node:22 sh -c "npm install && npm run build && npm test"
+```
+
 ## Project layout
 
 ```
@@ -172,6 +228,7 @@ internal/i18n         locales and localized system prompts
 internal/voice        Polly text to speech
 internal/server       HTTP API, approvals, sessions, rate limiting, security middleware
 internal/web          embedded web UI (HTML/CSS/JS, translations, icons, AG Grid)
+jobs/collections      daily collections check: Render Workflow + Cron Job (TypeScript)
 test/e2e              end-to-end flow: chat, approval, invoice created
 ```
 

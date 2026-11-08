@@ -1,0 +1,25 @@
+{
+  "name": "paysay-collections-job",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Daily collections check: a Render Workflow that finds unpaid PaySay invoices, reconciles them against PayPal Transaction Search, and posts a plan to the app for merchant approval.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "dev": "node --experimental-strip-types src/workflow.ts"
+  },
+  "dependencies": {
+    "@renderinc/sdk": "1.7.0",
+    "paypal": "git+https://github.com/context-plugins/paypal-typescript-sdk#5d0df8a8817e5fdf2e2cd48e68f790ea4730aab2"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
+  }
+}

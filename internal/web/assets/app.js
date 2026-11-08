@@ -21,6 +21,7 @@ const state = {
   statusFilter: "",
   scopeMine: false,
   knownStatus: null, // Map of invoice id -> status from the previous load
+  collections: null, // Latest daily collections plan from /api/collections
 };
 
 const $ = (id) => document.getElementById(id);
@@ -33,6 +34,11 @@ const els = {
   viewTitle: $("view-title"),
   refresh: $("refresh"),
   chase: $("chase"),
+  collectionsCard: $("collections-card"),
+  collectionsTitle: $("collections-title"),
+  collectionsWhen: $("collections-when"),
+  collectionsSummary: $("collections-summary"),
+  collectionsApprove: $("collections-approve"),
   kpiOutstanding: $("kpi-outstanding"),
   kpiOutstandingHint: $("kpi-outstanding-hint"),
   kpiCollected: $("kpi-collected"),
@@ -113,6 +119,7 @@ function applyStrings() {
     api.setGridOption("overlayNoRowsTemplate", `<span class="grid-empty">${t("grid.empty")}</span>`);
   }
   renderDashboard();
+  renderCollections();
 }
 
 // ---------- formatting ----------
@@ -180,6 +187,7 @@ async function init() {
   showView(VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview");
   applyStrings();
   await refreshInvoices();
+  await refreshCollections();
   restoreConversation();
 }
 
@@ -250,6 +258,7 @@ function wireEvents() {
 
   els.refresh.addEventListener("click", refreshInvoices);
   els.chase.addEventListener("click", () => ask(t("prompt.chase")));
+  els.collectionsApprove.addEventListener("click", approveCollections);
 
   els.quickFilter.addEventListener("input", () =>
     invoiceGrid && invoiceGrid.setGridOption("quickFilterText", els.quickFilter.value),
@@ -603,6 +612,95 @@ function renderAttention(open, drafts) {
   }
 }
 
+// ---------- daily collections check ----------
+
+// refreshCollections loads the latest daily plan from the server. The plan is
+// produced by a scheduled job that already cross-checked PayPal Transaction
+// Search, so paid customers are not listed. The merchant still approves the
+// reminders here; the job never sends them.
+async function refreshCollections() {
+  try {
+    const res = await fetch("/api/collections");
+    if (!res.ok) throw new Error(`collections ${res.status}`);
+    state.collections = await res.json();
+  } catch (_) {
+    state.collections = null;
+  }
+  renderCollections();
+}
+
+// renderCollections shows the Overview card: when the check ran, how many
+// invoices to chase and their total, how many were skipped because payment was
+// found, how many have already been reminded, and an Approve button. It hides
+// when there is no plan.
+function renderCollections() {
+  const plan = state.collections;
+  const chase = (plan && plan.chase) || [];
+  const skipped = (plan && plan.skipped) || [];
+  // No plan at all, and nothing to show: keep the card hidden.
+  if (!plan || (chase.length === 0 && skipped.length === 0)) {
+    els.collectionsCard.hidden = true;
+    return;
+  }
+  els.collectionsCard.hidden = false;
+
+  // reminded_ids lists the chase invoices already reminded; sum and count only
+  // the rows that still need chasing (reminded_count is kept for the label).
+  const remindedIDs = new Set(plan.reminded_ids || []);
+  const remainingRows = chase.filter((inv) => !remindedIDs.has(inv.id));
+  const reminded = plan.reminded_count || remindedIDs.size;
+  const remaining = remainingRows.length;
+  els.collectionsTitle.textContent =
+    remaining === 0 ? t("collections.titleNone") : t(remaining === 1 ? "collections.titleOne" : "collections.title", { n: remaining });
+
+  els.collectionsWhen.textContent = plan.generated_at
+    ? t("collections.when", { time: shortDateTime(plan.generated_at) })
+    : "";
+
+  const total = sumByCurrency(remainingRows);
+  const skippedText = skipped.length ? String(skipped.length) : t("collections.skippedNone");
+  const key = remaining === 0 ? "collections.summaryNone" : remaining === 1 ? "collections.summaryOne" : "collections.summary";
+  let summary = t(key, { total, n: remaining, skipped: skippedText });
+  if (reminded > 0) summary += ` ${t("collections.reminded", { n: reminded })}`;
+  els.collectionsSummary.textContent = summary;
+
+  // The Approve button only makes sense when invoices still need reminding.
+  els.collectionsApprove.hidden = remaining <= 0;
+}
+
+// approveCollections asks the server to mint a pending reminder batch for this
+// session (excluding invoices already reminded), then reuses the assistant's
+// confirmation card so approval runs through the same /api/confirm path as any
+// other money-moving action.
+async function approveCollections() {
+  if (state.busy) return;
+  els.collectionsApprove.disabled = true;
+  try {
+    const res = await fetch("/api/collections/approve", { method: "POST" });
+    if (res.status === 429) throw new Error(t("error.rate"));
+    if (!res.ok) throw new Error(t("error.generic"));
+    const pending = await res.json();
+    if (!pending || !pending.id) return;
+    openAssistant();
+    els.welcome.hidden = true;
+    const li = el("li", "msg msg-assistant");
+    li.appendChild(confirmCard(pending));
+    els.messages.appendChild(li);
+    scrollConversation();
+  } catch (err) {
+    setStatus(err instanceof TypeError ? t("error.generic") : err.message || t("error.generic"), true);
+  } finally {
+    els.collectionsApprove.disabled = false;
+  }
+}
+
+// shortDateTime formats a plan timestamp as a short date and time.
+function shortDateTime(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${shortDate(iso)} ${timeOfDay(d)}`;
+}
+
 // ---------- QR ----------
 
 async function showInvoiceQR(inv) {
@@ -932,6 +1030,7 @@ async function approve(pending, card) {
     saveChat();
 
     await refreshInvoices();
+    await refreshCollections();
     const results = el("div", "msg-actions");
     for (const c of calls) results.appendChild(actionCard(c));
     card.replaceWith(results);

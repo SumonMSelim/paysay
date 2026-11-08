@@ -1,0 +1,109 @@
+# Render Blueprint for PaySay.
+#
+# Three services:
+#   - paysay (web): the Go app, built from the existing Dockerfile.
+#   - paysay-collections (workflow): the daily collections check task.
+#   - paysay-collections-cron (cron): triggers the workflow once a day, since
+#     Render Workflows does not yet support native scheduling.
+#
+# Secrets are declared with `sync: false`: Render prompts for them on the
+# initial Blueprint creation and never stores them in this file. Names match
+# internal/config/config.go and jobs/collections/src/config.ts.
+
+services:
+  - type: web
+    name: paysay
+    runtime: docker
+    # Uses the Dockerfile at the repo root (the default path).
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    plan: starter
+    # The app serves a liveness endpoint at /healthz (internal/server/server.go).
+    healthCheckPath: /healthz
+    envVars:
+      # The Dockerfile sets SERVER_ADDR=:8080; PORT=8080 points Render's health
+      # checks and routing at the same port without changing Go code.
+      - key: PORT
+        value: "8080"
+      - key: SERVER_ADDR
+        value: ":8080"
+      # --- AWS / Amazon Bedrock ---
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_SESSION_TOKEN
+        sync: false
+      - key: BEDROCK_MODEL_ID
+        value: us.amazon.nova-pro-v1:0
+      - key: BEDROCK_MAX_TOKENS
+        value: "2048"
+      # --- PayPal (optional; omit to run in demo/mock mode) ---
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_SECRET
+        sync: false
+      - key: PAYPAL_ENVIRONMENT
+        value: SANDBOX
+      - key: PAYPAL_MERCHANT_EMAIL
+        sync: false
+      - key: PAYPAL_MERCHANT_NAME
+        sync: false
+      # --- App ---
+      - key: PAYSAY_DEFAULT_LOCALE
+        value: en-US
+      - key: PAYSAY_SUPPORTED_LOCALES
+        value: en-US,de-DE,th-TH
+      - key: VOICE_TTS_ENABLED
+        value: "true"
+      # Shared secret for the daily collections endpoint. Must match the value
+      # given to the collections workflow below.
+      - key: COLLECTIONS_TOKEN
+        sync: false
+
+  - type: workflow
+    name: paysay-collections
+    runtime: node
+    region: oregon
+    # The workflow definition lives in a subdirectory of this repo.
+    rootDir: jobs/collections
+    buildCommand: npm install && npm run build
+    # Registering the task requires importing the module that calls task().
+    startCommand: node dist/workflow.js
+    envVars:
+      - key: APP_URL
+        # The public URL of the web service, e.g. https://paysay.onrender.com.
+        # Set after the first deploy, once Render has assigned the hostname.
+        # (Blueprints have no variable interpolation, and a private-network
+        # reference yields host:port without a scheme, so this is set directly.)
+        sync: false
+      - key: COLLECTIONS_TOKEN
+        sync: false
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_SECRET
+        sync: false
+      - key: PAYPAL_ENVIRONMENT
+        value: SANDBOX
+
+  - type: cron
+    name: paysay-collections-cron
+    runtime: node
+    region: oregon
+    rootDir: jobs/collections
+    # Run once a day at 08:00 UTC.
+    schedule: "0 8 * * *"
+    buildCommand: npm install && npm run build
+    startCommand: node dist/trigger.js
+    envVars:
+      # A Render API key with permission to trigger workflow runs.
+      - key: RENDER_API_KEY
+        sync: false
+      # The workflow service's slug; the trigger script appends the task name.
+      - key: WORKFLOW_SLUG
+        fromService:
+          name: paysay-collections
+          type: workflow
+          property: slug

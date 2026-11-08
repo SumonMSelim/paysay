@@ -37,6 +37,8 @@ type Server struct {
 
 	sessions *sessionInvoices
 	pending  *pendingActions
+
+	collections *collectionsStore
 }
 
 // Options configures a Server.
@@ -80,6 +82,8 @@ func New(opts Options) *Server {
 
 		sessions: newSessionInvoices(),
 		pending:  newPendingActions(),
+
+		collections: newCollectionsStore(),
 	}
 }
 
@@ -94,6 +98,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/confirm", s.chatLimit.limit(s.handleConfirm))
 	mux.HandleFunc("GET /api/invoices", s.handleInvoices)
 	mux.HandleFunc("GET /api/invoices/{id}/qr", s.handleInvoiceQR)
+	mux.HandleFunc("GET /api/collections", s.handleCollections)
+	mux.HandleFunc("POST /api/collections/approve", s.chatLimit.limit(s.handleCollectionsApprove))
+	mux.HandleFunc("POST /api/internal/collections", s.handleCollectionsInternal)
 
 	if s.webFS != nil {
 		mux.Handle("GET /", http.FileServer(s.webFS))

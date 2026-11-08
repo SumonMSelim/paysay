@@ -77,12 +77,20 @@ configuration rather than from the model.
   external status filter, a pinned totals row that follows filters (with
   per-currency sums), row flashing when the agent changes an invoice, saved
   column state, and localized value formatters.
+- **Render:** a daily collections check runs as a **Render Workflow**, triggered
+  once a day by a **Render Cron Job** (Render Workflows has no native scheduler
+  yet). All three services, the web app, the workflow and the cron job, are
+  declared in a `render.yaml` Blueprint. The job finds sent-but-unpaid invoices,
+  and the merchant sees an Overview card, *"Daily check: N invoices to chase"*,
+  with one Approve button. The job never sends reminders itself: approval goes
+  through the app's existing confirmation gate.
+- **APIMatic:** the collections job reconciles against PayPal **Transaction
+  Search** through the APIMatic-generated PayPal **TypeScript SDK**, so a
+  customer who already paid is not reminded. If Transaction Search is
+  unavailable, the job degrades gracefully and skips no one.
 
 ### NOT YET BUILT: remove or rewrite before submitting
-- **Render:** hosted demo URL via a `render.yaml` Blueprint; reminder job on
-  Render Workflows with a daily Render Cron Job.
-- **APIMatic:** PayPal TypeScript SDK, built with the APIMatic Context Plugin,
-  to skip customers who already paid before sending reminders.
+- **Hosted demo URL:** a public deployment via the `render.yaml` Blueprint.
 - **Bryntum:** a collections timeline (Scheduler) per customer.
 
 ## Challenges we ran into
@@ -120,8 +128,9 @@ speech for privacy.
 
 ## Built with
 `go` · `amazon-bedrock` · `amazon-nova` · `amazon-polly` ·
-`paypal-invoicing-api` · `paypal-agent-toolkit` · `model-context-protocol` ·
-`ag-grid` · `web-speech-api` · `docker`
+`paypal-invoicing-api` · `paypal-agent-toolkit` · `paypal-transaction-search` ·
+`model-context-protocol` · `ag-grid` · `render` · `render-workflows` ·
+`apimatic` · `typescript` · `web-speech-api` · `docker`
 
 ## Try it out
 - GitHub: https://github.com/SumonMSelim/paysay

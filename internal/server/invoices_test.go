@@ -60,7 +60,7 @@ func TestHandleInvoiceQR(t *testing.T) {
 func TestNormalizeInvoicesPayPalV2Shape(t *testing.T) {
 	raw := `{"items":[
 		{"id":"INV2-9","status":"UNPAID",
-		 "detail":{"currency_code":"EUR","create_time":"2026-10-30T09:00:00Z"},
+		 "detail":{"currency_code":"EUR","create_time":"2026-10-30T09:00:00Z","invoice_number":"0007"},
 		 "amount":{"value":"99.00","currency_code":"EUR"},
 		 "primary_recipients":[{"billing_info":{"email_address":"payer@x.com"}}]}
 	]}`
@@ -72,6 +72,9 @@ func TestNormalizeInvoicesPayPalV2Shape(t *testing.T) {
 	if r.ID != "INV2-9" || r.Status != "UNPAID" || r.Customer != "payer@x.com" ||
 		r.Amount != "99.00" || r.Currency != "EUR" {
 		t.Errorf("row = %+v", r)
+	}
+	if r.Number != "0007" {
+		t.Errorf("number = %q, want 0007 from detail.invoice_number", r.Number)
 	}
 }
 
@@ -95,6 +98,9 @@ func TestNormalizeInvoicesLiveSandboxShape(t *testing.T) {
 	}
 	if rows[0].Amount != "45.00" || rows[0].Customer != "maria@example.com" {
 		t.Errorf("row = %+v", rows[0])
+	}
+	if rows[0].Number != "0001" {
+		t.Errorf("number = %q, want 0001 from detail.invoice_number", rows[0].Number)
 	}
 }
 

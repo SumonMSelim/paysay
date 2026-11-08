@@ -94,6 +94,20 @@
 
       <!-- Overview -->
       <section id="view-overview" class="view" aria-labelledby="view-title">
+        <article id="collections-card" class="collections-card" aria-labelledby="collections-title" hidden>
+          <div class="collections-head">
+            <div>
+              <p class="kicker" data-i18n="collections.kicker">daily check</p>
+              <h2 id="collections-title" class="collections-title"></h2>
+            </div>
+            <span id="collections-when" class="collections-when"></span>
+          </div>
+          <p id="collections-summary" class="collections-summary"></p>
+          <button id="collections-approve" type="button" class="btn btn-primary">
+            <svg class="icon"><use href="#i-bell"/></svg><span data-i18n="collections.approve">Approve reminders</span>
+          </button>
+        </article>
+
         <div class="kpis">
           <article class="kpi">
             <span class="kpi-label" data-i18n="kpi.outstanding">Outstanding</span>

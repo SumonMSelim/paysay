@@ -199,6 +199,13 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		}
 		calls[i].Output = res.Text
 		calls[i].IsError = res.IsError
+		// Record a successful reminder so the collections card and the approve
+		// endpoint do not offer to remind the same invoice twice.
+		if calls[i].Name == "send_invoice_reminder" && !calls[i].IsError {
+			if id := invoiceIDPattern.FindString(string(calls[i].Input)); id != "" {
+				s.collections.markReminded(id)
+			}
+		}
 	}
 	s.sessions.recordCreated(session, calls)
 	writeJSON(w, http.StatusOK, map[string]any{"tool_calls": calls})

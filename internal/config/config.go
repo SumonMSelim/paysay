@@ -83,6 +83,10 @@ type Config struct {
 	Server           Server
 	DefaultLocale    string
 	SupportedLocales []string
+	// CollectionsToken is the shared secret the daily collections job presents
+	// to the internal collections endpoint. When empty, that endpoint is
+	// disabled (returns 404), so the feature is opt-in.
+	CollectionsToken string
 }
 
 // Defaults applied when the corresponding environment variable is unset.
@@ -100,6 +104,11 @@ const (
 	defaultRatePerMin   = 10
 	defaultRatePerHour  = 300
 )
+
+// minCollectionsTokenLen is the shortest shared secret the collections endpoint
+// accepts, so the internal endpoint cannot be gated by a trivially guessable
+// token.
+const minCollectionsTokenLen = 16
 
 // defaultMCPArgs launches the official PayPal MCP server with all tools enabled.
 // See https://github.com/paypal/paypal-mcp-server.
@@ -151,6 +160,7 @@ func Load() (*Config, error) {
 		},
 		DefaultLocale:    getEnv("PAYSAY_DEFAULT_LOCALE", defaultLocale),
 		SupportedLocales: getEnvList("PAYSAY_SUPPORTED_LOCALES", defaultSupportedLocales),
+		CollectionsToken: os.Getenv("COLLECTIONS_TOKEN"),
 	}
 
 	if temp, ok := getEnvFloatOK("BEDROCK_TEMPERATURE"); ok {
@@ -189,6 +199,12 @@ func (c *Config) Validate() error {
 	}
 	if !contains(c.SupportedLocales, c.DefaultLocale) {
 		errs = append(errs, fmt.Sprintf("default locale %q is not in supported locales %v", c.DefaultLocale, c.SupportedLocales))
+	}
+	// A collections token, when set, gates an internal endpoint, so reject a
+	// weak secret rather than letting the feature run with one. An empty token
+	// is valid and disables the endpoint.
+	if c.CollectionsToken != "" && len(c.CollectionsToken) < minCollectionsTokenLen {
+		errs = append(errs, fmt.Sprintf("COLLECTIONS_TOKEN must be at least %d characters when set", minCollectionsTokenLen))
 	}
 
 	if len(errs) > 0 {

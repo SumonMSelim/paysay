@@ -220,6 +220,22 @@ button { cursor: pointer; background: none; border: 0; }
 .link-btn { color: var(--accent); font-size: 14px; font-weight: 500; }
 .link-btn:hover { text-decoration: underline; }
 
+/* ---------- Daily collections check ---------- */
+
+.collections-card {
+  background: var(--accent-soft); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 18px; margin-bottom: 18px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.collections-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.collections-title {
+  font-family: var(--font-display); font-size: 20px; line-height: 1.2;
+  letter-spacing: -0.01em; font-weight: 600;
+}
+.collections-when { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.collections-summary { font-size: 14px; color: var(--ink-2); }
+.collections-card .btn-primary { align-self: flex-start; }
+
 /* ---------- KPIs ---------- */
 
 .kpis {
