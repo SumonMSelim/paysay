@@ -35,6 +35,8 @@ type InvoiceRow struct {
 	Amount   string `json:"amount"`
 	Currency string `json:"currency"`
 	Created  string `json:"created"`
+	Due      string `json:"due"`
+	Paid     string `json:"paid,omitempty"`
 }
 
 // handleInvoices returns the merchant's invoices as normalized rows for the
@@ -145,14 +147,20 @@ type rawInvoice struct {
 	Total        string `json:"total"`
 	CreateTime   string `json:"create_time"`
 	NumberFlat   string `json:"invoice_number"`
+	DueDateFlat  string `json:"due_date"`
+	PaidDateFlat string `json:"paid_date"`
 
 	// PayPal v2 (nested) shape.
 	Detail struct {
 		CurrencyCode  string `json:"currency_code"`
 		CreateTime    string `json:"create_time"`
 		InvoiceNumber string `json:"invoice_number"`
-		Metadata      struct {
-			CreateTime string `json:"create_time"`
+		PaymentTerm   struct {
+			DueDate string `json:"due_date"`
+		} `json:"payment_term"`
+		Metadata struct {
+			CreateTime     string `json:"create_time"`
+			LastUpdateTime string `json:"last_update_time"`
 		} `json:"metadata"`
 	} `json:"detail"`
 	Amount struct {
@@ -164,6 +172,12 @@ type rawInvoice struct {
 			Email string `json:"email_address"`
 		} `json:"billing_info"`
 	} `json:"primary_recipients"`
+	Payments struct {
+		Transactions []struct {
+			PaymentDate string `json:"payment_date"`
+			PaymentTime string `json:"payment_time"`
+		} `json:"transactions"`
+	} `json:"payments"`
 }
 
 // normalizeInvoices parses a list_invoices tool result (either shape) into rows.
@@ -195,6 +209,18 @@ func normalizeInvoices(raw string) []InvoiceRow {
 		// Created: flat, else nested detail. Live PayPal responses put it under
 		// detail.metadata.
 		row.Created = firstNonEmpty(it.CreateTime, it.Detail.CreateTime, it.Detail.Metadata.CreateTime)
+
+		// Due: flat field, else nested payment_term.due_date.
+		row.Due = firstNonEmpty(it.DueDateFlat, it.Detail.PaymentTerm.DueDate)
+
+		// Paid: flat, else payment transaction date, else last update time if paid.
+		var paymentDate string
+		if len(it.Payments.Transactions) > 0 {
+			paymentDate = firstNonEmpty(it.Payments.Transactions[0].PaymentDate, it.Payments.Transactions[0].PaymentTime)
+		}
+		if strings.EqualFold(it.Status, "PAID") {
+			row.Paid = firstNonEmpty(it.PaidDateFlat, paymentDate, it.Detail.Metadata.LastUpdateTime)
+		}
 
 		rows = append(rows, row)
 	}

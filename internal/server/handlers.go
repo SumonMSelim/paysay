@@ -33,12 +33,20 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // default locale, and whether PayPal is in live or mock mode. It never returns
 // credentials.
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
+	hasBryntum := false
+	if s.webFS != nil {
+		if f, err := s.webFS.Open("vendor/bryntum/scheduler.umd.js"); err == nil {
+			_ = f.Close()
+			hasBryntum = true
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"brand":          s.cfg.Brand.Name,
 		"tagline":        s.cfg.Brand.Tagline,
 		"default_locale": s.cfg.DefaultLocale,
 		"live_mode":      s.liveMode,
 		"tts_enabled":    s.cfg.Voice.TTSEnabled,
+		"has_bryntum":    hasBryntum,
 	})
 }
 

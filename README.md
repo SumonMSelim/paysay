@@ -29,6 +29,12 @@ that reasons and calls tools) together, not side by side.
   filters. Rows the assistant just changed flash briefly, and the column
   layout is remembered. Saying *"show me Anna's unpaid invoices"* opens the
   table already filtered.
+- **Timeline:** a Bryntum Scheduler view of customer payment lifecycles. One
+  resource row per customer with bars spanning invoice creation to due (or
+  paid) date, color-coded by status with distinct red outlines for overdue
+  invoices, an overdue summary count, and bar clicks triggering invoice
+  QR/actions. Saying *"show me Anna's payment timeline"* opens the timeline
+  filtered to that customer and scrolls directly to their invoices.
 - **Agent activity:** every PayPal action the assistant took, with details.
 - **Assistant (docked on the right, full screen on phones):** a large
   *Tap and speak* button, example requests in the merchant's language, invoice
@@ -91,9 +97,15 @@ simulated PayPal provider, clearly badged in the sidebar.
 | Protocol | Model Context Protocol (JSON-RPC 2.0 over stdio), hand-written Go client |
 | Speech | Browser Web Speech API (speech to text), Amazon Polly (text to speech) |
 | Invoice table | AG Grid Community v33, self-hosted |
+| Timeline | Bryntum Scheduler v7.3.8 (commercial trial, fetched at build time) |
 | Languages | English, German, Thai |
 | Frontend | Vanilla JS/HTML/CSS embedded in the Go binary, no build step |
 | Packaging | Docker multi-stage (Go + Node for the MCP server), Docker Compose |
+
+> Bryntum Scheduler is fetched at Docker build time under its commercial trial
+> license (`@bryntum/scheduler-trial`), with prebuilt browser bundles embedded
+> into the Go binary. When the files are absent (such as after a plain host
+> build), the Timeline degrades gracefully with a localized fallback message.
 
 ## Requirements
 

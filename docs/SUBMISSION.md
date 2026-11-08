@@ -70,13 +70,22 @@ configuration rather than from the model.
   Polly for text to speech.
 - **PayPal technology used:** PayPal Agent Toolkit / MCP server; PayPal
   Invoicing API (sandbox): create, send, list, look up, remind, payment QR.
-- **Sponsor tools used:** AG Grid Community v33 for the invoice table and the
-  overview's recent invoices. The agent drives the grid: a screen-only
-  `show_invoices` tool turns "show me Anna's unpaid invoices" into a status
-  and quick filter. Also: status pill renderers, per-row action cells, an
-  external status filter, a pinned totals row that follows filters (with
-  per-currency sums), row flashing when the agent changes an invoice, saved
-  column state, and localized value formatters.
+- **Sponsor tools used:**
+  - **AG Grid Community v33:** for the invoice table and the overview's recent
+    invoices. The agent drives the grid: a screen-only `show_invoices` tool
+    turns "show me Anna's unpaid invoices" into a status and quick filter.
+    Also: status pill renderers, per-row action cells, an external status
+    filter, a pinned totals row that follows filters (with per-currency sums),
+    row flashing when the agent changes an invoice, saved column state, and
+    localized value formatters.
+  - **Bryntum Scheduler v7.3.8:** a read-only collections timeline showing one
+    resource row per customer and event bars spanning invoice creation to due or
+    paid date. Bars match the payment status palette with distinct red outlines
+    for overdue invoices, and bar clicks trigger invoice actions. The agent
+    drives the schedule: a screen-only `show_timeline` tool lets voice commands
+    like *"show me Anna's payment timeline"* filter and scroll the timeline to
+    that customer. Prebuilt UMD bundle with full English, German and Thai
+    localization; degrades gracefully when assets are absent.
 - **Render:** a daily collections check runs as a **Render Workflow**, triggered
   once a day by a **Render Cron Job** (Render Workflows has no native scheduler
   yet). All three services, the web app, the workflow and the cron job, are
@@ -91,7 +100,6 @@ configuration rather than from the model.
 
 ### NOT YET BUILT: remove or rewrite before submitting
 - **Hosted demo URL:** a public deployment via the `render.yaml` Blueprint.
-- **Bryntum:** a collections timeline (Scheduler) per customer.
 
 ## Challenges we ran into
 - **Go meets a TypeScript-first toolkit.** Rather than reimplement PayPal's

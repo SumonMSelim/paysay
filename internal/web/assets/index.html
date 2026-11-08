@@ -15,6 +15,7 @@
   <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true">
     <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
     <symbol id="i-invoice" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></symbol>
+    <symbol id="i-timeline" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 2v4M16 2v4M7 14h6M11 17h6"/></symbol>
     <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
     <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
@@ -52,6 +53,10 @@
         <button type="button" class="nav-item" data-view="invoices">
           <svg class="icon"><use href="#i-invoice"/></svg><span data-i18n="nav.invoices">Invoices</span>
           <span id="nav-invoice-count" class="nav-count">0</span>
+        </button>
+        <button type="button" class="nav-item" data-view="timeline">
+          <svg class="icon"><use href="#i-timeline"/></svg><span data-i18n="nav.timeline">Timeline</span>
+          <span id="nav-overdue-count" class="nav-count nav-count-alert" hidden>0</span>
         </button>
         <button type="button" class="nav-item" data-view="activity">
           <svg class="icon"><use href="#i-activity"/></svg><span data-i18n="nav.activity">Agent activity</span>
@@ -168,6 +173,25 @@
           </label>
         </div>
         <div id="invoice-grid" class="grid grid-full"></div>
+      </section>
+
+      <!-- Timeline -->
+      <section id="view-timeline" class="view" hidden>
+        <p id="timeline-missing" class="banner" role="status" hidden>
+          <svg class="icon"><use href="#i-alert"/></svg><span data-i18n="timeline.missing">Timeline view not included in this build</span>
+        </p>
+        <div id="timeline-body" class="timeline-body">
+          <div class="toolbar">
+            <div class="search">
+              <svg class="icon"><use href="#i-search"/></svg>
+              <input id="timeline-filter" type="search" autocomplete="off" data-i18n-placeholder="timeline.search" placeholder="Filter by customer…" />
+            </div>
+            <div id="timeline-overdue-chip" class="timeline-overdue-chip" role="status">
+              <svg class="icon"><use href="#i-alert"/></svg><span id="timeline-overdue-text"></span>
+            </div>
+          </div>
+          <div id="timeline-scheduler" class="timeline-scheduler"></div>
+        </div>
       </section>
 
       <!-- Activity -->

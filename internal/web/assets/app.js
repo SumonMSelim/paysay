@@ -4,7 +4,7 @@
 "use strict";
 
 const STRINGS = window.PAYSAY_STRINGS || {};
-const VIEWS = ["overview", "invoices", "activity"];
+const VIEWS = ["overview", "invoices", "timeline", "activity"];
 const OPEN_STATUSES = new Set(["SENT", "UNPAID", "PARTIALLY_PAID"]);
 
 const state = {
@@ -30,6 +30,7 @@ const els = {
   localeSelects: document.querySelectorAll(".locale-select"),
   modeBadge: $("mode-badge"),
   navCount: $("nav-invoice-count"),
+  navOverdueCount: $("nav-overdue-count"),
   viewKicker: $("view-kicker"),
   viewTitle: $("view-title"),
   refresh: $("refresh"),
@@ -49,6 +50,12 @@ const els = {
   attention: $("attention"),
   recentGrid: $("recent-grid"),
   invoiceGrid: $("invoice-grid"),
+  timelineMissing: $("timeline-missing"),
+  timelineBody: $("timeline-body"),
+  timelineFilter: $("timeline-filter"),
+  timelineOverdueChip: $("timeline-overdue-chip"),
+  timelineOverdueText: $("timeline-overdue-text"),
+  timelineScheduler: $("timeline-scheduler"),
   quickFilter: $("quick-filter"),
   statusFilter: $("status-filter"),
   scopeMine: $("scope-mine"),
@@ -79,6 +86,7 @@ const els = {
 
 let recentGrid = null;
 let invoiceGrid = null;
+let timelineScheduler = null;
 let recognition = null;
 
 // ---------- i18n ----------
@@ -104,6 +112,29 @@ function applyStrings() {
 
   els.assistantSub.textContent = t("assistant.sub", { lang: localeInfo().native_name || "" });
   els.modeBadge.textContent = state.liveMode ? t("mode.live") : t("mode.demo");
+  if (window.bryntum?.locales?.De?.PresetManager?.weekAndMonth) {
+    window.bryntum.locales.De.PresetManager.weekAndMonth.middleDateFormat = "D. MMM.";
+  }
+  if (window.bryntum?.scheduler?.LocaleManager) {
+    const bLoc = state.locale === "de-DE" ? "De" : state.locale === "th-TH" ? "Th" : "En";
+    if (window.bryntum.locales?.[bLoc]) {
+      window.bryntum.scheduler.LocaleManager.applyLocale(bLoc);
+    }
+  }
+  if (timelineScheduler) {
+    if (timelineScheduler.columns && timelineScheduler.columns.first) {
+      timelineScheduler.columns.first.text = t("col.customer");
+    }
+    if (timelineScheduler.features?.timeRanges?.currentTimeLine) {
+      const todayText = t("timeline.today") || "Today";
+      const ctl = timelineScheduler.features.timeRanges.currentTimeLine;
+      ctl.name = todayText;
+      if (ctl.initialConfig) ctl.initialConfig.name = todayText;
+      const label = els.timelineScheduler?.querySelector(".b-sch-current-time label");
+      if (label) label.textContent = todayText;
+    }
+  }
+  updateTimelineOverdue(state.invoices || []);
   renderSuggestions();
   renderViewHeading();
   setMicState(state.recognizing);
@@ -124,6 +155,10 @@ function applyStrings() {
 
 // ---------- formatting ----------
 
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+
 function money(amount, currency) {
   const n = Number.parseFloat(amount);
   if (Number.isNaN(n)) return "";
@@ -134,10 +169,29 @@ function money(amount, currency) {
   }
 }
 
+// parseCivilDate parses YYYY-MM-DD as a local date (midnight in local time)
+// so that calendar dates do not shift west of UTC.
+function parseCivilDate(str) {
+  if (!str) return null;
+  if (str instanceof Date) return str;
+  const s = String(str).trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) {
+    return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function safeStatus(status) {
+  const s = String(status || "").toUpperCase();
+  return ["DRAFT", "OPEN", "PAID", "SENT", "UNPAID", "CANCELLED", "PARTIALLY_PAID"].includes(s) ? s : "DRAFT";
+}
+
 // shortDate omits the year for dates in the current year to keep columns narrow.
 function shortDate(iso) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
+  const d = parseCivilDate(iso);
+  if (!d || Number.isNaN(d.getTime())) return "";
   const opts = { day: "numeric", month: "short" };
   if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
   return new Intl.DateTimeFormat(state.locale, opts).format(d);
@@ -191,6 +245,48 @@ async function init() {
   restoreConversation();
 }
 
+let bryntumLoading = null;
+function loadBryntum() {
+  if (window.bryntum?.scheduler?.Scheduler) return Promise.resolve(true);
+  if (!state.hasBryntum) return Promise.resolve(false);
+  if (bryntumLoading) return bryntumLoading;
+
+  bryntumLoading = (async () => {
+    const cssHrefs = [
+      "/vendor/bryntum/fontawesome/css/fontawesome.css",
+      "/vendor/bryntum/fontawesome/css/solid.css",
+      "/vendor/bryntum/scheduler.css",
+      "/vendor/bryntum/stockholm-light.css",
+    ];
+    for (const href of cssHrefs) {
+      if (!document.querySelector(`link[href="${href}"]`)) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = href;
+        document.head.appendChild(link);
+      }
+    }
+    const scripts = [
+      "/vendor/bryntum/scheduler.umd.js",
+      "/vendor/bryntum/locales/scheduler.locale.En.js",
+      "/vendor/bryntum/locales/scheduler.locale.De.js",
+      "/vendor/bryntum/locales/scheduler.locale.Th.js",
+    ];
+    for (const src of scripts) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+    applyStrings();
+    return true;
+  })().catch(() => false);
+  return bryntumLoading;
+}
+
 async function loadConfig() {
   try {
     const cfg = await (await fetch("/api/config")).json();
@@ -201,6 +297,10 @@ async function loadConfig() {
     state.ttsEnabled = Boolean(cfg.tts_enabled);
     state.liveMode = Boolean(cfg.live_mode);
     state.locale = cfg.default_locale || state.locale;
+    state.hasBryntum = Boolean(cfg.has_bryntum);
+    if (state.hasBryntum) {
+      loadBryntum();
+    }
     els.modeBadge.classList.add(state.liveMode ? "live" : "demo");
   } catch (_) {
     setStatus(t("error.generic"), true);
@@ -263,6 +363,11 @@ function wireEvents() {
   els.quickFilter.addEventListener("input", () =>
     invoiceGrid && invoiceGrid.setGridOption("quickFilterText", els.quickFilter.value),
   );
+  if (els.timelineFilter) {
+    els.timelineFilter.addEventListener("input", () =>
+      applyTimelineFilter(els.timelineFilter.value),
+    );
+  }
   els.statusFilter.querySelectorAll("button").forEach((b) =>
     b.addEventListener("click", () => setStatusFilter(b.dataset.status)),
   );
@@ -304,6 +409,7 @@ function showView(view) {
   });
   if (location.hash.slice(1) !== view) history.replaceState(null, "", `#${view}`);
   renderViewHeading();
+  if (view === "timeline") renderTimeline();
 }
 
 function renderViewHeading() {
@@ -518,6 +624,311 @@ function applyShowInvoices(call) {
   showView("invoices");
 }
 
+// applyShowTimeline carries out the assistant's show_timeline call: it opens
+// the timeline view, optionally filtered to a specific customer.
+function applyShowTimeline(call) {
+  const input = parseJSON(call.input) || {};
+  const customer = input.customer || "";
+  if (els.timelineFilter) els.timelineFilter.value = customer;
+  els.assistant.classList.remove("open");
+  showView("timeline");
+  applyTimelineFilter(customer);
+}
+
+const NO_CUSTOMER_ID = "__no_customer__";
+const TIMELINE_FILTER_ID = "timelineCustomerFilter";
+
+// computeInvoiceDates calculates the start/end dates and overdue status for an invoice bar.
+// A bar runs from creation to due date; if none, to paid date; if open with no due date, to today.
+function computeInvoiceDates(inv) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  let start = inv.created ? parseCivilDate(inv.created) : new Date();
+  if (!start || Number.isNaN(start.getTime())) start = new Date();
+
+  const status = String(inv.status || "").toUpperCase();
+  const isOpen = OPEN_STATUSES.has(status);
+
+  let end = null;
+  let isOverdue = false;
+
+  if (inv.due) {
+    const dueCivil = parseCivilDate(inv.due);
+    if (dueCivil) {
+      const dueDay = new Date(dueCivil.getFullYear(), dueCivil.getMonth(), dueCivil.getDate());
+      // An invoice due today is not overdue; only overdue if dueDay < today
+      if (isOpen && dueDay < today) {
+        isOverdue = true;
+      }
+      // Cover the whole due day (Bryntum end dates are exclusive)
+      end = new Date(dueDay.getFullYear(), dueDay.getMonth(), dueDay.getDate() + 1);
+    }
+  }
+
+  if (!end) {
+    if (status === "PAID") {
+      if (inv.paid) {
+        const paidCivil = parseCivilDate(inv.paid);
+        if (paidCivil) {
+          const paidDay = new Date(paidCivil.getFullYear(), paidCivil.getMonth(), paidCivil.getDate());
+          end = new Date(paidDay.getFullYear(), paidDay.getMonth(), paidDay.getDate() + 1);
+        }
+      }
+      if (!end) end = new Date(start.getTime() + 24 * 3600 * 1000);
+    } else if (isOpen) {
+      // Open with no due date: runs to today, covering the whole current day
+      end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    } else {
+      end = new Date(start.getTime() + 24 * 3600 * 1000);
+    }
+  }
+
+  if (end <= start) {
+    end = new Date(start.getTime() + 24 * 3600 * 1000);
+  }
+
+  return { start, end, isOverdue };
+}
+
+function updateTimelineOverdue(invoices) {
+  let overdueCount = 0;
+  for (const inv of invoices) {
+    const { isOverdue } = computeInvoiceDates(inv);
+    if (isOverdue) overdueCount++;
+  }
+
+  if (els.timelineOverdueChip && els.timelineOverdueText) {
+    if (overdueCount > 0) {
+      els.timelineOverdueChip.classList.add("has-overdue");
+      els.timelineOverdueText.textContent = t(overdueCount === 1 ? "timeline.overdueOne" : "timeline.overdue", { n: overdueCount });
+    } else {
+      els.timelineOverdueChip.classList.remove("has-overdue");
+      els.timelineOverdueText.textContent = t("timeline.noOverdue");
+    }
+  }
+  if (els.navOverdueCount) {
+    els.navOverdueCount.hidden = overdueCount === 0;
+    els.navOverdueCount.textContent = overdueCount;
+  }
+}
+
+function setupTimeline() {
+  if (!window.bryntum?.scheduler?.Scheduler) return;
+  const Scheduler = window.bryntum.scheduler.Scheduler;
+  const LocaleManager = window.bryntum.scheduler.LocaleManager;
+  if (window.bryntum?.locales?.De?.PresetManager?.weekAndMonth) {
+    window.bryntum.locales.De.PresetManager.weekAndMonth.middleDateFormat = "D. MMM.";
+  }
+  if (LocaleManager) {
+    const bLoc = state.locale.startsWith("de") ? "De" : state.locale.startsWith("th") ? "Th" : "En";
+    if (window.bryntum?.locales?.[bLoc]) {
+      LocaleManager.applyLocale(bLoc);
+    }
+  }
+
+  const initialColWidth = window.innerWidth <= 860 ? 120 : 220;
+
+  timelineScheduler = new Scheduler({
+    appendTo: els.timelineScheduler,
+    readOnly: true,
+    rowHeight: 50,
+    barMargin: 7,
+    viewPreset: "weekAndMonth",
+    features: {
+      stickyEvents: true,
+      eventDrag: false,
+      eventResize: false,
+      eventEdit: false,
+      eventMenu: false,
+      scheduleMenu: false,
+      cellEdit: false,
+      timeRanges: {
+        showCurrentTimeLine: {
+          name: t("timeline.today") || "Today",
+        },
+        showHeaderElements: false,
+      },
+      eventTooltip: {
+        template: ({ eventRecord }) => {
+          const inv = eventRecord.invoice;
+          if (!inv) return "";
+          const statusVal = safeStatus(inv.status);
+          const { isOverdue } = computeInvoiceDates(inv);
+          const custName = inv.customer ? inv.customer : (t("timeline.noCustomer") || "No customer");
+          return `
+            <div class="timeline-tip">
+              <div class="timeline-tip-head">
+                <span class="timeline-tip-amount">${escapeHtml(money(inv.amount, inv.currency))}</span>
+                <span class="pill pill-${statusVal}">${escapeHtml(t("status." + inv.status))}</span>
+              </div>
+              <div class="timeline-tip-meta">
+                <div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("confirm.customer"))}:</span> <b>${escapeHtml(custName)}</b></div>
+                <div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.invoice"))}:</span> <span class="mono">${escapeHtml(inv.id || "")}</span></div>
+                <div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.created"))}:</span> ${escapeHtml(shortDate(inv.created))}</div>
+                ${inv.due ? `<div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.due"))}:</span> ${escapeHtml(shortDate(inv.due))}${isOverdue ? ` <span class="timeline-tip-overdue">(${escapeHtml(t("timeline.overdueTag"))})</span>` : ""}</div>` : ""}
+                ${inv.paid ? `<div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.paid"))}:</span> ${escapeHtml(shortDate(inv.paid))}</div>` : ""}
+              </div>
+            </div>
+          `;
+        },
+      },
+    },
+    columns: [
+      { id: "customerCol", text: t("col.customer"), field: "name", width: initialColWidth },
+    ],
+    eventRenderer({ eventRecord }) {
+      const inv = eventRecord.invoice;
+      if (!inv) return "";
+      return `
+        <div class="timeline-bar">
+          <span class="timeline-bar-amount">${escapeHtml(money(inv.amount, inv.currency))}</span>
+          <span class="timeline-bar-status"><span class="timeline-bar-sep">·</span> ${escapeHtml(t("status." + inv.status))}</span>
+        </div>
+      `;
+    },
+    onEventClick({ eventRecord }) {
+      const inv = eventRecord.invoice || state.invoices.find((i) => i.id === eventRecord.id);
+      if (!inv) return;
+      const status = String(inv.status || "").toUpperCase();
+      if (OPEN_STATUSES.has(status)) {
+        showInvoiceQR(inv);
+      } else if (status === "DRAFT") {
+        ask(t("prompt.send", { id: inv.id }));
+      }
+    },
+  });
+
+  window.addEventListener("resize", () => {
+    if (!timelineScheduler?.columns?.first) return;
+    const targetWidth = window.innerWidth <= 860 ? 120 : 220;
+    if (timelineScheduler.columns.first.width !== targetWidth) {
+      timelineScheduler.columns.first.width = targetWidth;
+    }
+  });
+}
+
+function updateTimelineData(invoices) {
+  if (!timelineScheduler) return;
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const hasEmptyCustomer = invoices.some((i) => !i.customer || !String(i.customer).trim());
+  const customerList = [...new Set(invoices.map((i) => (i.customer ? String(i.customer).trim() : "")).filter(Boolean))].sort();
+  const resources = customerList.map((c) => ({ id: c, name: c }));
+  if (hasEmptyCustomer) {
+    resources.push({
+      id: NO_CUSTOMER_ID,
+      name: t("timeline.noCustomer") || "No customer",
+    });
+  }
+
+  let minTime = Infinity;
+  let maxTime = -Infinity;
+
+  const events = invoices.map((inv) => {
+    const { start, end, isOverdue } = computeInvoiceDates(inv);
+    const sTime = start.getTime();
+    const eTime = end.getTime();
+    if (sTime < minTime) minTime = sTime;
+    if (eTime > maxTime) maxTime = eTime;
+
+    const statusVal = safeStatus(inv.status);
+    const cls = `event-status-${statusVal}` + (isOverdue ? " event-overdue" : "");
+    const custTrimmed = inv.customer ? String(inv.customer).trim() : "";
+    const resourceId = custTrimmed || NO_CUSTOMER_ID;
+
+    return {
+      id: inv.id,
+      resourceId,
+      startDate: start,
+      endDate: end,
+      cls,
+      invoice: inv,
+    };
+  });
+
+  if (minTime === Infinity) {
+    minTime = today.getTime() - 7 * 86400000;
+    maxTime = today.getTime() + 14 * 86400000;
+  } else {
+    minTime = Math.min(minTime, today.getTime() - 7 * 86400000);
+    maxTime = Math.max(maxTime, today.getTime() + 14 * 86400000);
+  }
+  const minDate = new Date(minTime - 7 * 86400000);
+  const maxDate = new Date(maxTime + 14 * 86400000);
+
+  timelineScheduler.setTimeSpan(minDate, maxDate);
+  timelineScheduler.resourceStore.data = resources;
+  timelineScheduler.eventStore.data = events;
+
+  if (els.timelineFilter && els.timelineFilter.value) {
+    applyTimelineFilter(els.timelineFilter.value);
+  } else {
+    // Default view: scroll so today is near the right edge
+    const padDays = window.innerWidth <= 860 ? 1 : 0;
+    const targetDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + padDays);
+    timelineScheduler.scrollToDate(targetDate, { block: "end", animate: false });
+  }
+}
+
+async function renderTimeline() {
+  if (state.hasBryntum && !window.bryntum?.scheduler?.Scheduler) {
+    await loadBryntum();
+  }
+  const hasBryntum = Boolean(window.bryntum?.scheduler?.Scheduler);
+  if (!hasBryntum) {
+    if (els.timelineMissing) els.timelineMissing.hidden = false;
+    if (els.timelineBody) els.timelineBody.hidden = true;
+    updateTimelineOverdue(state.invoices || []);
+    return;
+  }
+  if (els.timelineMissing) els.timelineMissing.hidden = true;
+  if (els.timelineBody) els.timelineBody.hidden = false;
+
+  const invoices = state.invoices || [];
+  updateTimelineOverdue(invoices);
+
+  if (!timelineScheduler) {
+    setupTimeline();
+  }
+  updateTimelineData(invoices);
+}
+
+function applyTimelineFilter(filter) {
+  if (!timelineScheduler) return;
+  const q = String(filter || "").trim().toLowerCase();
+  if (!q) {
+    timelineScheduler.resourceStore.removeFilter(TIMELINE_FILTER_ID);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const padDays = window.innerWidth <= 860 ? 1 : 0;
+    const targetDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + padDays);
+    timelineScheduler.scrollToDate(targetDate, { block: "end", animate: false });
+    return;
+  }
+  timelineScheduler.resourceStore.filter({
+    id: TIMELINE_FILTER_ID,
+    filterBy: (r) => (r.name || "").toLowerCase().includes(q),
+  });
+  const matching = timelineScheduler.resourceStore.records.filter((r) =>
+    (r.name || "").toLowerCase().includes(q),
+  );
+  if (matching.length > 0) {
+    const resIds = new Set(matching.map((r) => r.id));
+    const custEvents = timelineScheduler.eventStore.records.filter((e) => resIds.has(e.resourceId));
+    if (custEvents.length > 0) {
+      custEvents.sort((a, b) => (b.endDate?.getTime() || 0) - (a.endDate?.getTime() || 0));
+      const mostRecent = custEvents[0];
+      timelineScheduler.scrollResourceIntoView(matching[0], { animate: false });
+      timelineScheduler.scrollEventIntoView(mostRecent, { animate: false, block: "center", edgeOffset: 50 });
+    } else {
+      timelineScheduler.scrollResourceIntoView(matching[0], { animate: false });
+    }
+  }
+}
+
 async function fetchInvoices(scope) {
   const res = await fetch(scope ? `/api/invoices?scope=${scope}` : "/api/invoices");
   if (!res.ok) throw new Error(`invoices ${res.status}`);
@@ -543,6 +954,7 @@ async function refreshInvoices() {
   if (invoiceGrid) invoiceGrid.setGridOption("rowData", state.scopeMine ? state.mine : state.invoices);
   flashRows(changed);
   renderDashboard();
+  renderTimeline();
 }
 
 // changedInvoiceIds returns invoices that are new or changed status since the
@@ -847,6 +1259,8 @@ async function sendMessage(text) {
 
     const show = calls.find((c) => c.name === "show_invoices" && !c.is_error);
     if (show) applyShowInvoices(show);
+    const showTl = calls.find((c) => c.name === "show_timeline" && !c.is_error);
+    if (showTl) applyShowTimeline(showTl);
     const qr = calls.find((c) => c.name === "generate_invoice_qr_code" && !c.is_error);
     if (qr) {
       const id = invoiceIdOf(qr);
@@ -1186,6 +1600,10 @@ function actionCard(call, when) {
     const input = parseJSON(call.input) || {};
     const status = String(input.status || "ALL").toUpperCase();
     meta.appendChild(el("span", "", status === "OPEN" ? t("filter.open") : status === "ALL" ? t("filter.all") : t(`status.${status}`)));
+    if (input.customer) meta.appendChild(el("span", "", `“${input.customer}”`));
+  } else if (call.name === "show_timeline") {
+    const input = parseJSON(call.input) || {};
+    meta.appendChild(el("span", "", t("nav.timeline")));
     if (input.customer) meta.appendChild(el("span", "", `“${input.customer}”`));
   }
   const id = invoiceIdOf(call);

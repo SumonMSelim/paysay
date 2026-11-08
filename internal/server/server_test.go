@@ -136,8 +136,12 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	if rr.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Error("missing X-Content-Type-Options")
 	}
-	if rr.Header().Get("Content-Security-Policy") == "" {
+	csp := rr.Header().Get("Content-Security-Policy")
+	if csp == "" {
 		t.Error("missing Content-Security-Policy")
+	}
+	if !strings.Contains(csp, "font-src 'self' data:") {
+		t.Errorf("expected font-src in CSP, got %q", csp)
 	}
 	if rr.Header().Get("X-Frame-Options") != "DENY" {
 		t.Error("missing X-Frame-Options")
@@ -203,6 +207,26 @@ func (s stubSynth) Synthesize(ctx context.Context, text string, locale i18n.Loca
 		return nil, nil
 	}
 	return &voice.Audio{MIMEType: "audio/mpeg", Data: s.data}, nil
+}
+
+func TestConfigEndpointHasBryntum(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	srv := New(Options{Config: cfg})
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if has, ok := res["has_bryntum"].(bool); !ok || has {
+		t.Errorf("has_bryntum without webFS = %v, want false", res["has_bryntum"])
+	}
 }
 
 func TestChatRejectsOversizedMessage(t *testing.T) {

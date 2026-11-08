@@ -12,6 +12,9 @@
 # Go
 /vendor/
 
+# Web vendor (downloaded at build time)
+/internal/web/assets/vendor/bryntum/
+
 # OS / editor
 .DS_Store
 *.swp

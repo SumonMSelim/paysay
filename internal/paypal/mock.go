@@ -31,6 +31,8 @@ type mockInvoice struct {
 	Total      string          `json:"total"`
 	Items      json.RawMessage `json:"items,omitempty"`
 	CreateTime string          `json:"create_time"`
+	DueDate    string          `json:"due_date,omitempty"`
+	PaidDate   string          `json:"paid_date,omitempty"`
 }
 
 // NewMockProvider creates a mock provider attributed to the given merchant
@@ -53,7 +55,7 @@ func (m *MockProvider) Tools(ctx context.Context) ([]ToolDescriptor, error) {
 		{
 			Name:        "create_invoice",
 			Description: "Create a new draft invoice for a customer with line items.",
-			InputSchema: schema(`{"type":"object","properties":{"recipient_email":{"type":"string"},"currency_code":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"quantity":{"type":"string"},"unit_amount":{"type":"string"}}}},"note":{"type":"string"}},"required":["currency_code","items"]}`),
+			InputSchema: schema(`{"type":"object","properties":{"recipient_email":{"type":"string"},"currency_code":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"quantity":{"type":"string"},"unit_amount":{"type":"string"}}}},"note":{"type":"string"},"due_date":{"type":"string"}},"required":["currency_code","items"]}`),
 		},
 		{
 			Name:        "send_invoice",
@@ -115,6 +117,7 @@ func (m *MockProvider) createInvoice(args json.RawMessage) (ToolResult, error) {
 		Currency       string          `json:"currency_code"`
 		Items          json.RawMessage `json:"items"`
 		Total          string          `json:"total"`
+		DueDate        string          `json:"due_date"`
 	}
 	_ = json.Unmarshal(args, &in)
 	if in.Currency == "" {
@@ -138,6 +141,7 @@ func (m *MockProvider) createInvoice(args json.RawMessage) (ToolResult, error) {
 		Total:      firstNonEmpty(total, "0.00"),
 		Items:      in.Items,
 		CreateTime: time.Now().UTC().Format(time.RFC3339),
+		DueDate:    in.DueDate,
 	}
 	m.invoices[id] = inv
 	return marshalResult(inv)
@@ -214,6 +218,9 @@ func (m *MockProvider) mutateStatus(args json.RawMessage, status string) (ToolRe
 		return notFound(id)
 	}
 	inv.Status = status
+	if status == "PAID" && inv.PaidDate == "" {
+		inv.PaidDate = time.Now().UTC().Format(time.RFC3339)
+	}
 	return marshalResult(inv)
 }
 

@@ -47,6 +47,13 @@ const showInvoicesSchema = `{"type":"object","properties":{
 "status":{"type":"string","enum":["ALL","DRAFT","OPEN","PAID"],"description":"DRAFT = not sent yet, OPEN = sent and waiting for payment, PAID = paid, ALL = every status."},
 "customer":{"type":"string","description":"Part of the customer's email or name to search for. Omit to show all customers."}}}`
 
+// ShowTimelineTool is a screen-only tool: it opens the merchant's payment timeline
+// view, optionally filtered to a specific customer, and never contacts PayPal.
+const ShowTimelineTool = "show_timeline"
+
+const showTimelineSchema = `{"type":"object","properties":{
+"customer":{"type":"string","description":"Part of the customer's email or name to filter the timeline by. Omit to show all customers."}}}`
+
 // ErrModelUnavailable reports that the language model could not be reached
 // (for example missing or expired cloud credentials), as opposed to a problem
 // with the merchant's request.
@@ -255,6 +262,9 @@ func (a *Agent) runTool(ctx context.Context, tu types.ToolUseBlock) (ToolCall, t
 	} else if name == ShowInvoicesTool {
 		// Handled by the UI; tell the model the table is now on screen.
 		resultText = `{"shown":true,"note":"The filtered invoice table is now on the merchant's screen."}`
+	} else if name == ShowTimelineTool {
+		// Handled by the UI; tell the model the timeline is now on screen.
+		resultText = `{"shown":true,"note":"The customer payment timeline is now on the merchant's screen."}`
 	} else {
 		res, err := a.tools.Invoke(ctx, name, argsJSON)
 		if err != nil {
@@ -302,11 +312,18 @@ func (a *Agent) ensureToolConfig(ctx context.Context) (*types.ToolConfiguration,
 		return nil, errors.New("agent: no PayPal tools available")
 	}
 
-	descs = append(descs, paypal.ToolDescriptor{
-		Name:        ShowInvoicesTool,
-		Description: "Show the merchant's invoice table on screen, filtered by status and/or customer. Use it when the merchant asks to see, show or open invoices. It only changes the screen and does not contact PayPal.",
-		InputSchema: json.RawMessage(showInvoicesSchema),
-	})
+	descs = append(descs,
+		paypal.ToolDescriptor{
+			Name:        ShowInvoicesTool,
+			Description: "Show the merchant's invoice table on screen, filtered by status and/or customer. Use it when the merchant asks to see, show or open invoices. It only changes the screen and does not contact PayPal.",
+			InputSchema: json.RawMessage(showInvoicesSchema),
+		},
+		paypal.ToolDescriptor{
+			Name:        ShowTimelineTool,
+			Description: "Show the merchant's payment timeline / schedule on screen, optionally filtered to a specific customer. Use it when the merchant asks to see a schedule, timeline or payment history of customer invoices. It only changes the screen and does not contact PayPal.",
+			InputSchema: json.RawMessage(showTimelineSchema),
+		},
+	)
 
 	tools := make([]types.Tool, 0, len(descs))
 	for _, d := range descs {

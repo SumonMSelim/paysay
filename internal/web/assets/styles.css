@@ -124,6 +124,9 @@ button { cursor: pointer; background: none; border: 0; }
   border-radius: 999px; background: var(--sunken);
   font-size: 12px; text-align: center; color: var(--ink-2);
 }
+.nav-count-alert {
+  background: var(--bad); color: #ffffff; font-weight: 600;
+}
 
 .nav-assistant { display: none; }
 
@@ -334,6 +337,112 @@ button { cursor: pointer; background: none; border: 0; }
 .grid-empty { color: var(--ink-3); }
 .grid .ag-cell.cell-total { text-align: left; }
 .grid .ag-floating-bottom .ag-row { background: var(--surface-2); font-weight: 600; }
+
+/* ---------- Timeline (Bryntum Scheduler) ---------- */
+
+.timeline-body {
+  display: flex; flex-direction: column; gap: 14px;
+  height: calc(100vh - 210px); height: calc(100dvh - 210px); min-height: 360px;
+}
+.timeline-scheduler {
+  flex: 1; min-height: 300px; width: 100%;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); overflow: hidden;
+}
+.timeline-overdue-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 12px; border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 500; color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--line);
+}
+.timeline-overdue-chip.has-overdue {
+  color: var(--bad); background: var(--bad-soft); border-color: #f5c2c0; font-weight: 600;
+}
+.timeline-overdue-chip .icon { width: 16px; height: 16px; }
+
+/* Truncate customer column text with ellipsis */
+.b-grid-cell[data-column="name"],
+.b-grid-cell.b-grid-cell-name {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Bryntum Scheduler event styling: match status pill palette */
+.b-sch-event {
+  border-radius: 6px !important; cursor: pointer;
+  box-shadow: 0 1px 2px rgba(28, 26, 22, 0.06);
+}
+.b-sch-event.event-status-DRAFT {
+  background: var(--muted-soft) !important; color: var(--ink-2) !important;
+  border: 1px solid var(--line-strong) !important;
+}
+.b-sch-event.event-status-OPEN,
+.b-sch-event.event-status-SENT,
+.b-sch-event.event-status-UNPAID,
+.b-sch-event.event-status-PARTIALLY_PAID {
+  background: var(--warn-soft) !important; color: var(--warn) !important;
+  border: 1px solid #e6c88b !important;
+}
+.b-sch-event.event-status-PAID {
+  background: var(--ok-soft) !important; color: var(--ok) !important;
+  border: 1px solid #a3d9b8 !important;
+}
+.b-sch-event.event-status-CANCELLED {
+  background: var(--bad-soft) !important; color: var(--bad) !important;
+  border: 1px solid #f5c2c0 !important;
+}
+.b-sch-event.event-overdue {
+  outline: 2px solid var(--bad) !important; outline-offset: -1px;
+}
+.b-sch-event-wrap {
+  min-width: 65px !important;
+}
+.b-sch-event {
+  min-width: 65px !important;
+  container-type: inline-size !important;
+}
+.b-sch-event-content {
+  width: 100% !important;
+  overflow: hidden !important;
+}
+.timeline-bar {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; line-height: 1.2; padding: 0 6px;
+  width: 100%; height: 100%; overflow: hidden;
+}
+.timeline-bar-amount {
+  font-weight: 600; font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 0 1 auto; min-width: 0;
+}
+.timeline-bar-status {
+  font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 0 100 auto; min-width: 0;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.timeline-bar-sep { opacity: 0.5; flex-shrink: 0; }
+@container (max-width: 110px) {
+  .timeline-bar-status {
+    display: none !important;
+  }
+}
+
+/* Tooltip */
+.timeline-tip {
+  font-family: var(--font-ui); font-size: 13px; color: var(--ink);
+  display: flex; flex-direction: column; gap: 8px; padding: 2px;
+}
+.timeline-tip-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.timeline-tip-amount { font-size: 15px; font-weight: 700; }
+.timeline-tip-meta {
+  display: flex; flex-direction: column; gap: 4px; color: var(--ink-2); font-size: 12px;
+}
+.timeline-tip-row { display: flex; gap: 6px; }
+.timeline-tip-label { color: var(--ink-3); min-width: 60px; }
+.timeline-tip-overdue { color: var(--bad); font-weight: 600; }
 
 /* ---------- Activity ---------- */
 
@@ -568,7 +677,21 @@ button { cursor: pointer; background: none; border: 0; }
   .view-title { font-size: 28px; }
   .kpi { padding: 14px; }
   .kpi-value { font-size: 22px; }
-  .grid-full { height: calc(100dvh - 330px); }
+  .grid-full, .timeline-body { height: calc(100dvh - 330px); }
+
+  /* Narrow customer column on phones to ~120px */
+  .timeline-scheduler .b-grid-subgrid-locked {
+    width: 120px !important;
+    max-width: 120px !important;
+  }
+  .timeline-scheduler .b-grid-header[data-column="name"],
+  .timeline-scheduler .b-grid-cell[data-column="name"] {
+    width: 120px !important;
+    max-width: 120px !important;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+  }
 
   .assistant {
     position: fixed; inset: 0; z-index: 50; border: 0;

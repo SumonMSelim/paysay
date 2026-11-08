@@ -24,15 +24,52 @@ func (s *stubLister) Invoke(ctx context.Context, name string, args json.RawMessa
 
 func TestNormalizeInvoicesMockShape(t *testing.T) {
 	raw := `{"items":[
-		{"id":"INV2-A","status":"DRAFT","recipient":"a@x.com","currency_code":"EUR","total":"30.00","create_time":"2026-10-31T10:00:00Z"},
+		{"id":"INV2-A","status":"DRAFT","recipient":"a@x.com","currency_code":"EUR","total":"30.00","create_time":"2026-10-31T10:00:00Z","due_date":"2026-11-10"},
 		{"id":"INV2-B","status":"SENT","recipient":"b@x.com","currency_code":"THB","total":"420","create_time":"2026-10-31T11:00:00Z"}
 	],"total_items":2}`
 	rows := normalizeInvoices(raw)
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
-	if rows[0].Customer != "a@x.com" || rows[0].Currency != "EUR" || rows[0].Amount != "30.00" {
+	if rows[0].Customer != "a@x.com" || rows[0].Currency != "EUR" || rows[0].Amount != "30.00" || rows[0].Due != "2026-11-10" {
 		t.Errorf("row0 = %+v", rows[0])
+	}
+}
+
+func TestNormalizeInvoicesPaidDateMockAndPayPalShape(t *testing.T) {
+	// 1. Mock provider shape with paid_date
+	mockJSON := `{"items":[
+		{"id":"INV2-PAID-MOCK","status":"PAID","recipient":"cafe@example.com","currency_code":"EUR","total":"120.00",
+		 "create_time":"2026-10-20T15:40:00Z","due_date":"2026-11-01","paid_date":"2026-10-31T12:00:00Z"}
+	]}`
+	mockRows := normalizeInvoices(mockJSON)
+	if len(mockRows) != 1 {
+		t.Fatalf("mockRows len = %d, want 1", len(mockRows))
+	}
+	if mockRows[0].Paid != "2026-10-31T12:00:00Z" {
+		t.Errorf("mock paid = %q, want 2026-10-31T12:00:00Z", mockRows[0].Paid)
+	}
+	if mockRows[0].Due != "2026-11-01" {
+		t.Errorf("mock due = %q, want 2026-11-01", mockRows[0].Due)
+	}
+
+	// 2. PayPal live v2 shape with payments.transactions[0].payment_date
+	paypalJSON := `{"items":[
+		{"id":"INV2-PAID-LIVE","status":"PAID",
+		 "detail":{"currency_code":"EUR","create_time":"2026-10-10T13:05:00Z","payment_term":{"due_date":"2026-10-25"}},
+		 "amount":{"currency_code":"EUR","value":"45.00"},
+		 "primary_recipients":[{"billing_info":{"email_address":"maria@example.com"}}],
+		 "payments":{"transactions":[{"payment_date":"2026-10-24T16:00:00Z","amount":{"currency_code":"EUR","value":"45.00"}}]}}
+	]}`
+	liveRows := normalizeInvoices(paypalJSON)
+	if len(liveRows) != 1 {
+		t.Fatalf("liveRows len = %d, want 1", len(liveRows))
+	}
+	if liveRows[0].Paid != "2026-10-24T16:00:00Z" {
+		t.Errorf("live paid = %q, want 2026-10-24T16:00:00Z", liveRows[0].Paid)
+	}
+	if liveRows[0].Due != "2026-10-25" {
+		t.Errorf("live due = %q, want 2026-10-25", liveRows[0].Due)
 	}
 }
 
@@ -60,7 +97,7 @@ func TestHandleInvoiceQR(t *testing.T) {
 func TestNormalizeInvoicesPayPalV2Shape(t *testing.T) {
 	raw := `{"items":[
 		{"id":"INV2-9","status":"UNPAID",
-		 "detail":{"currency_code":"EUR","create_time":"2026-10-30T09:00:00Z","invoice_number":"0007"},
+		 "detail":{"currency_code":"EUR","create_time":"2026-10-30T09:00:00Z","invoice_number":"0007","payment_term":{"due_date":"2026-11-15"}},
 		 "amount":{"value":"99.00","currency_code":"EUR"},
 		 "primary_recipients":[{"billing_info":{"email_address":"payer@x.com"}}]}
 	]}`
@@ -70,7 +107,7 @@ func TestNormalizeInvoicesPayPalV2Shape(t *testing.T) {
 	}
 	r := rows[0]
 	if r.ID != "INV2-9" || r.Status != "UNPAID" || r.Customer != "payer@x.com" ||
-		r.Amount != "99.00" || r.Currency != "EUR" {
+		r.Amount != "99.00" || r.Currency != "EUR" || r.Due != "2026-11-15" {
 		t.Errorf("row = %+v", r)
 	}
 	if r.Number != "0007" {
@@ -85,6 +122,7 @@ func TestNormalizeInvoicesLiveSandboxShape(t *testing.T) {
 	raw := `{"total_pages":1,"total_items":1,"items":[
 		{"id":"INV2-HPMV-U49W-SPT3-FDWN","status":"DRAFT",
 		 "detail":{"currency_code":"EUR","invoice_number":"0001","invoice_date":"2026-11-06",
+		           "payment_term":{"due_date":"2026-11-20"},
 		           "metadata":{"create_time":"2026-11-07T01:05:44Z"}},
 		 "amount":{"currency_code":"EUR","value":"45.00"},
 		 "primary_recipients":[{"billing_info":{"email_address":"maria@example.com"}}]}
@@ -95,6 +133,9 @@ func TestNormalizeInvoicesLiveSandboxShape(t *testing.T) {
 	}
 	if got := rows[0].Created; got != "2026-11-07T01:05:44Z" {
 		t.Errorf("created = %q, want detail.metadata.create_time", got)
+	}
+	if rows[0].Due != "2026-11-20" {
+		t.Errorf("due = %q, want 2026-11-20", rows[0].Due)
 	}
 	if rows[0].Amount != "45.00" || rows[0].Customer != "maria@example.com" {
 		t.Errorf("row = %+v", rows[0])

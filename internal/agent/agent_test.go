@@ -352,6 +352,38 @@ func TestShowInvoicesIsOfferedAndNeverReachesPayPal(t *testing.T) {
 	}
 }
 
+func TestShowTimelineIsOfferedAndNeverReachesPayPal(t *testing.T) {
+	tools := &countingProvider{ToolProvider: paypal.NewMockProvider("")}
+	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{
+		toolUseResponse("tu-1", ShowTimelineTool, map[string]any{"customer": "anna"}),
+		textResponse("Here is Anna's payment timeline."),
+	}}
+	ag := newTestAgent(conv, tools)
+
+	res, err := ag.Respond(context.Background(), nil, "Show me Anna's payment timeline", i18n.MustGet("en-US"))
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	offered := false
+	for _, tool := range conv.lastInput.ToolConfig.Tools {
+		if spec, ok := tool.(*types.ToolMemberToolSpec); ok && aws.ToString(spec.Value.Name) == ShowTimelineTool {
+			offered = true
+		}
+	}
+	if !offered {
+		t.Error("show_timeline was not offered to the model")
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Name != ShowTimelineTool || res.ToolCalls[0].IsError {
+		t.Fatalf("tool calls = %+v, want one successful show_timeline", res.ToolCalls)
+	}
+	if !strings.Contains(string(res.ToolCalls[0].Input), "anna") {
+		t.Errorf("input = %s, want the customer filter passed to the UI", res.ToolCalls[0].Input)
+	}
+	if tools.invokes != 0 {
+		t.Errorf("PayPal provider was called %d times for a screen-only tool", tools.invokes)
+	}
+}
+
 // countingProvider counts Invoke calls on a wrapped provider.
 type countingProvider struct {
 	paypal.ToolProvider

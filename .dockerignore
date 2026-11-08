@@ -11,3 +11,4 @@ coverage.*
 .idea
 .vscode
 .DS_Store
+internal/web/assets/vendor/bryntum
