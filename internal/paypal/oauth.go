@@ -74,7 +74,9 @@ func fetchTokenFromURL(ctx context.Context, endpoint, clientID, secret string, c
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("paypal: oauth error (HTTP %d): %s", resp.StatusCode, string(body))
+		// The response body can echo back the client credentials or other
+		// sensitive detail, so report only the status, never the body.
+		return nil, fmt.Errorf("paypal: oauth error (HTTP %d)", resp.StatusCode)
 	}
 
 	var tr TokenResponse

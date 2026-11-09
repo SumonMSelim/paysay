@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.13
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.9
 	github.com/aws/aws-sdk-go-v2/service/polly v1.67.1
+	github.com/aws/smithy-go v1.28.7
 	github.com/google/uuid v1.6.0
 )
 
@@ -23,5 +24,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.39.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.6 // indirect
-	github.com/aws/smithy-go v1.28.7 // indirect
 )

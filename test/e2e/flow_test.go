@@ -72,7 +72,7 @@ func TestEndToEndCreateInvoiceGermanWithApproval(t *testing.T) {
 		BrandName:        cfg.Brand.Name,
 		ApprovalRequired: paypal.ApprovalTools,
 	})
-	srv := server.New(server.Options{Config: cfg, Agent: ag, Invoices: server.NewInvoiceListerAdapter(shim{tools})})
+	srv := server.New(server.Options{Config: cfg, Agent: ag, Invoices: server.NewInvoiceListerAdapter(shim{tools}), ApprovalTools: paypal.ApprovalTools})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

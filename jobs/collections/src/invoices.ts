@@ -25,12 +25,18 @@ export const MIN_AGE_DAYS = 3;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+// APP_REQUEST_TIMEOUT_MS bounds each call to the PaySay app so a hung endpoint
+// cannot hold the scheduled job open indefinitely.
+export const APP_REQUEST_TIMEOUT_MS = 30_000;
+
 /**
  * Fetches the merchant's invoices from the PaySay app. Throws on a non-2xx
- * response or a malformed body.
+ * response, a malformed body, or if the request exceeds the timeout.
  */
 export async function fetchInvoices(cfg: JobConfig, fetchImpl: typeof fetch = fetch): Promise<InvoiceRow[]> {
-  const res = await fetchImpl(`${cfg.appUrl}/api/invoices`);
+  const res = await fetchImpl(`${cfg.appUrl}/api/invoices`, {
+    signal: AbortSignal.timeout(APP_REQUEST_TIMEOUT_MS),
+  });
   if (!res.ok) {
     throw new Error(`GET /api/invoices failed with ${res.status}`);
   }

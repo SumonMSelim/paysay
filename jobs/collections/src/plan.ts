@@ -1,5 +1,5 @@
 import type { JobConfig } from "./config.js";
-import type { InvoiceRow } from "./invoices.js";
+import { APP_REQUEST_TIMEOUT_MS, type InvoiceRow } from "./invoices.js";
 
 // The plan posted to the app's internal collections endpoint. Field names are
 // snake_case to match the Go handler (internal/server/collections.go).
@@ -81,6 +81,7 @@ export async function postPlan(cfg: JobConfig, plan: CollectionsPlan, fetchImpl:
       Authorization: `Bearer ${cfg.collectionsToken}`,
     },
     body: JSON.stringify(plan),
+    signal: AbortSignal.timeout(APP_REQUEST_TIMEOUT_MS),
   });
   if (res.status !== 204) {
     throw new Error(`POST /api/internal/collections failed with ${res.status}`);

@@ -54,11 +54,6 @@ const ShowTimelineTool = "show_timeline"
 const showTimelineSchema = `{"type":"object","properties":{
 "customer":{"type":"string","description":"Part of the customer's email or name to filter the timeline by. Omit to show all customers."}}}`
 
-// ErrModelUnavailable reports that the language model could not be reached
-// (for example missing or expired cloud credentials), as opposed to a problem
-// with the merchant's request.
-var ErrModelUnavailable = errors.New("model unavailable")
-
 // Agent orchestrates a Bedrock model and a PayPal tool provider.
 type Agent struct {
 	model     bedrock.Converser
@@ -180,7 +175,7 @@ func (a *Agent) Respond(ctx context.Context, history []Turn, message string, loc
 			InferenceConfig: a.inferenceConfig(),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("agent: converse: %w: %w", ErrModelUnavailable, err)
+			return nil, fmt.Errorf("agent: converse: %w: %w", classifyModelError(err), err)
 		}
 
 		assistantMsg, ok := outputMessage(out)

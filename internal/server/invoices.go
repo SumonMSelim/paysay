@@ -7,7 +7,75 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
+
+// Tuning for the PayPal-backed read routes. invoiceRateLimitPerMinute caps the
+// list/QR endpoints per client, separate from the chat budget but counting
+// toward the same global hourly cap. invoiceCacheTTL memoizes the list for a
+// few seconds so refreshes and multiple tabs do not each hit PayPal.
+const (
+	invoiceRateLimitPerMinute = 30
+	invoiceCacheTTL           = 5 * time.Second
+)
+
+// invoiceCache holds the most recent list_invoices result keyed by its status
+// filter for a short TTL. The collections job polls once a day, so it is never
+// served stale in a way that matters; interactive refreshes are.
+type invoiceCache struct {
+	ttl time.Duration
+
+	mu      sync.Mutex
+	entries map[string]invoiceCacheEntry
+}
+
+type invoiceCacheEntry struct {
+	text    string
+	expires time.Time
+}
+
+func newInvoiceCache(ttl time.Duration) *invoiceCache {
+	return &invoiceCache{ttl: ttl, entries: make(map[string]invoiceCacheEntry)}
+}
+
+// get returns the cached list text for the given status filter when it is still
+// fresh.
+func (c *invoiceCache) get(status string, t time.Time) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[status]
+	if !ok || t.After(e.expires) {
+		return "", false
+	}
+	return e.text, true
+}
+
+// put stores a list result for the given status filter.
+func (c *invoiceCache) put(status, text string, t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[status] = invoiceCacheEntry{text: text, expires: t.Add(c.ttl)}
+}
+
+// invalidate drops every cached entry, so the next read hits PayPal. Called
+// after a successful create, send or remind.
+func (c *invoiceCache) invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]invoiceCacheEntry)
+}
+
+// writePayPalConnecting reports that PayPal is still connecting in the
+// background (live mode startup) so the caller should retry shortly. It is used
+// by every PayPal-backed route while the readiness gate is not yet ready.
+func writePayPalConnecting(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+		"error": "PayPal is still connecting, please try again in a moment",
+		"code":  "paypal_connecting",
+	})
+}
 
 // InvoiceLister is the read-only capability the server needs to populate the
 // invoice dashboard. It is satisfied by the PayPal ToolProvider (live or mock)
@@ -44,7 +112,12 @@ type InvoiceRow struct {
 // mock shape and the PayPal Invoicing v2 shape. With ?scope=mine it returns
 // only the invoices this browser session created.
 func (s *Server) handleInvoices(w http.ResponseWriter, r *http.Request) {
-	if s.invoices == nil {
+	invoices, ready := s.gate.lister()
+	if !ready {
+		writePayPalConnecting(w)
+		return
+	}
+	if invoices == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"invoices": []InvoiceRow{}})
 		return
 	}
@@ -57,14 +130,22 @@ func (s *Server) handleInvoices(w http.ResponseWriter, r *http.Request) {
 		args = b
 	}
 
-	res, err := s.invoices.Invoke(r.Context(), "list_invoices", args)
-	if err != nil || res.IsError {
-		s.log.Error("list invoices failed", "error", err, "tool_error", res.IsError)
-		writeError(w, http.StatusBadGateway, "could not load invoices")
-		return
+	// Serve the raw list from the short-lived cache when fresh, so refreshes
+	// and multiple tabs do not each hit PayPal. The cache holds the unfiltered
+	// tool output keyed by status; scope=mine filtering is applied afterwards.
+	text, cached := s.invoiceCache.get(status, now())
+	if !cached {
+		res, err := invoices.Invoke(r.Context(), "list_invoices", args)
+		if err != nil || res.IsError {
+			s.log.Error("list invoices failed", "error", err, "tool_error", res.IsError)
+			writeError(w, http.StatusBadGateway, "could not load invoices")
+			return
+		}
+		text = res.Text
+		s.invoiceCache.put(status, text, now())
 	}
 
-	rows := normalizeInvoices(res.Text)
+	rows := normalizeInvoices(text)
 	if r.URL.Query().Get("scope") == "mine" {
 		rows = s.sessions.filter(sessionID(w, r), rows)
 	}
@@ -75,7 +156,12 @@ func (s *Server) handleInvoices(w http.ResponseWriter, r *http.Request) {
 
 // handleInvoiceQR generates a scannable payment QR code for an invoice.
 func (s *Server) handleInvoiceQR(w http.ResponseWriter, r *http.Request) {
-	if s.invoices == nil {
+	invoices, ready := s.gate.lister()
+	if !ready {
+		writePayPalConnecting(w)
+		return
+	}
+	if invoices == nil {
 		writeError(w, http.StatusNotFound, "invoice service not available")
 		return
 	}
@@ -92,7 +178,7 @@ func (s *Server) handleInvoiceQR(w http.ResponseWriter, r *http.Request) {
 		"height":     300,
 	})
 
-	res, err := s.invoices.Invoke(r.Context(), "generate_invoice_qr_code", args)
+	res, err := invoices.Invoke(r.Context(), "generate_invoice_qr_code", args)
 	if err != nil || res.IsError {
 		s.log.Error("generate qr code failed", "invoice_id", id, "error", err, "tool_error", res.IsError)
 		writeError(w, http.StatusBadGateway, "could not generate QR code")

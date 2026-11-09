@@ -56,6 +56,10 @@ services:
         value: en-US
       - key: PAYSAY_SUPPORTED_LOCALES
         value: en-US,de-DE,th-TH
+      # Restrict browser CORS and the state-changing Origin check to the public
+      # site. Matches SERVER_ALLOWED_ORIGINS in internal/config/config.go.
+      - key: SERVER_ALLOWED_ORIGINS
+        value: https://paysay.onrender.com
       - key: VOICE_TTS_ENABLED
         value: "true"
       # Shared secret for the daily collections endpoint. Must match the value
