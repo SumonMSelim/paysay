@@ -7,7 +7,9 @@ package paypal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/SumonMSelim/paysay/internal/paypal/mcp"
 )
@@ -58,6 +60,12 @@ type Service struct {
 	allowSet      map[string]bool // optional allow-list of tool names
 	merchantEmail string          // optional default merchant email for invoicing
 	merchantName  string          // optional business name printed on invoices
+	log           *slog.Logger    // structured logger; defaults to slog.Default()
+
+	// invoicing makes the direct Invoicing REST calls the MCP create_invoice
+	// tool cannot (it has no due-date field). Nil disables the due-date update,
+	// in which case invoices are created without one.
+	invoicing *invoicingClient
 }
 
 // Option configures a Service.
@@ -86,6 +94,16 @@ func WithMerchantEmail(email string) Option {
 func WithMerchantName(name string) Option {
 	return func(s *Service) {
 		s.merchantName = name
+	}
+}
+
+// WithLogger sets the structured logger used for operational warnings (for
+// example a due-date update that failed). When unset, slog.Default() is used.
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Service) {
+		if l != nil {
+			s.log = l
+		}
 	}
 }
 
@@ -118,6 +136,12 @@ func NewService(ctx context.Context, lc LaunchConfig, opts ...Option) (*Service,
 	for _, o := range opts {
 		o(s)
 	}
+	if s.log == nil {
+		s.log = slog.Default()
+	}
+	// Enable the direct Invoicing REST client so new invoices can be given a
+	// due date, which the MCP create_invoice tool cannot set.
+	s.invoicing = newInvoicingClient(apiBaseURL(lc.Environment), lc.AccessToken, nil)
 
 	if _, err := client.Initialize(ctx); err != nil {
 		_ = s.Close()
@@ -132,6 +156,9 @@ func newServiceWithClient(c mcpClient, opts ...Option) *Service {
 	s := &Service{client: c, closers: []func() error{c.Close}}
 	for _, o := range opts {
 		o(s)
+	}
+	if s.log == nil {
+		s.log = slog.Default()
 	}
 	return s
 }
@@ -172,7 +199,53 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	if err != nil {
 		return ToolResult{}, err
 	}
-	return ToolResult{Text: res.Text(), IsError: res.IsError}, nil
+	out := ToolResult{Text: res.Text(), IsError: res.IsError}
+
+	// The MCP create_invoice tool has no due-date field, so once the draft
+	// exists we attach the resolved due date through the Invoicing REST API. A
+	// failure there does not fail the create: the draft still exists, but the
+	// output is annotated so the reply and card stay honest about it.
+	if name == "create_invoice" && !out.IsError && s.invoicing != nil {
+		out.Text = s.applyDueDate(ctx, args, out.Text)
+	}
+	return out, nil
+}
+
+// applyDueDate attaches the resolved due date to a just-created invoice and
+// annotates the tool output with due_date and due_date_set so the frontend and
+// model can tell the merchant the truth. origArgs are the model's create_invoice
+// arguments before shaping; output is the MCP tool's JSON result.
+func (s *Service) applyDueDate(ctx context.Context, origArgs json.RawMessage, output string) string {
+	dueDate := resolvedDueDate(origArgs)
+	if dueDate == "" {
+		return output
+	}
+
+	id := invoiceIDPattern.FindString(output)
+	if id == "" {
+		// Without an ID we cannot address the invoice to set its due date.
+		s.log.Warn("invoice due date not set: no invoice id in create_invoice output",
+			"due_date", dueDate)
+		return annotateDueDate(output, dueDate, false)
+	}
+
+	set := false
+	if err := s.invoicing.setDueDate(ctx, id, dueDate); err != nil {
+		// Log enough to diagnose on Render (step and HTTP status) without ever
+		// including a response body or the token.
+		attrs := []any{"invoice_id", id, "due_date", dueDate}
+		var ie *invoicingError
+		if errors.As(err, &ie) {
+			attrs = append(attrs, "step", ie.Step)
+			if ie.Status != 0 {
+				attrs = append(attrs, "status", ie.Status)
+			}
+		}
+		s.log.Warn("invoice due date not set", attrs...)
+	} else {
+		set = true
+	}
+	return annotateDueDate(output, dueDate, set)
 }
 
 // Close shuts down the MCP client and subprocess.

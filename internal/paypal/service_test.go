@@ -173,6 +173,44 @@ func TestMockCreateInvoiceHandlesNestedUnitAmount(t *testing.T) {
 	}
 }
 
+func TestMockCreateInvoiceAppliesDueDate(t *testing.T) {
+	withClock(t, fixedNow)
+	m := NewMockProvider("")
+	// No due date supplied: the mock applies the 14-day default so the demo
+	// invoice has a due date and can become overdue.
+	res, err := m.Invoke(context.Background(), "create_invoice", json.RawMessage(`{"currency_code":"EUR","total":"10.00"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("create_invoice: err=%v res=%+v", err, res)
+	}
+	var inv struct {
+		DueDate string `json:"due_date"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &inv); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if inv.DueDate != "2026-03-15" {
+		t.Errorf("due_date = %q, want 2026-03-15 (today + 14 days)", inv.DueDate)
+	}
+}
+
+func TestMockCreateInvoiceHonoursExplicitDueDate(t *testing.T) {
+	withClock(t, fixedNow)
+	m := NewMockProvider("")
+	res, err := m.Invoke(context.Background(), "create_invoice", json.RawMessage(`{"currency_code":"EUR","total":"10.00","due_date":"2026-03-20"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("create_invoice: err=%v res=%+v", err, res)
+	}
+	var inv struct {
+		DueDate string `json:"due_date"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &inv); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if inv.DueDate != "2026-03-20" {
+		t.Errorf("due_date = %q, want 2026-03-20 (explicit value honoured)", inv.DueDate)
+	}
+}
+
 func TestServiceCreateInvoiceScrubsSellerDetails(t *testing.T) {
 	fm := &fakeMCP{}
 	svc := newServiceWithClient(fm, WithMerchantEmail("shop@sandbox.example"))

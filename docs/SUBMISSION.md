@@ -44,7 +44,10 @@ including money and date formats, follows the merchant's language.
   (`@paypal/mcp`) driving the **Invoicing API** in the sandbox. The Go backend
   launches it and speaks the **Model Context Protocol** (JSON-RPC 2.0 over
   stdio) through a small hand-written client. Access tokens are minted from the
-  app's client credentials and refreshed before expiry.
+  app's client credentials and refreshed before expiry. Because the MCP
+  `create_invoice` tool has no due-date field, the backend sets each new
+  invoice's due date with a direct Invoicing API update right after the draft
+  is created.
 - **Approval gate:** money-moving tools are held by the agent loop and returned
   as a pending action. The server stores it per browser session with a random,
   single-use ID and a 10-minute expiry; only the merchant's Confirm runs it.
@@ -130,9 +133,9 @@ safety rules belong in code rather than prompts, and how much a
 native-language interface changes who a payments product is actually for.
 
 ## What's next for PaySay
-Due dates and overdue tracking, more languages (Vietnamese, Polish, Tagalog,
-Spanish), recurring invoices through PayPal's subscription tools, and on-device
-speech for privacy.
+Overdue tracking, more languages (Vietnamese, Polish, Tagalog, Spanish),
+recurring invoices through PayPal's subscription tools, and on-device speech
+for privacy.
 
 ## Built with
 `go` · `amazon-bedrock` · `amazon-nova` · `amazon-polly` ·

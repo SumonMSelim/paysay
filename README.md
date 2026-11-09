@@ -78,6 +78,10 @@ Browser (Web Speech API)                Go backend
 - **Seller details come from configuration.** The model tends to invent a
   business name and address; the server strips any seller fields it supplies
   and fills them from `PAYPAL_MERCHANT_EMAIL` / `PAYPAL_MERCHANT_NAME`.
+- **New invoices get a due date.** If the merchant names one it is honoured;
+  otherwise the invoice defaults to due 14 days after its invoice date. The MCP
+  `create_invoice` tool has no due-date field, so the server sets it with a
+  direct PayPal Invoicing API update right after the draft is created.
 - **Speech in** uses the browser's Web Speech API in the selected language.
   **Speech out** uses Amazon Polly where a voice exists (English, German); Thai
   falls back to text.

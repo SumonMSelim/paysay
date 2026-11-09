@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -439,6 +440,73 @@ func TestConcurrentFirstRequestsShareToolConfig(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestRespondPutsResolvedDueDateOnPendingCreateInvoice(t *testing.T) {
+	mock := paypal.NewMockProvider("shop@example.com")
+	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{
+		toolUseResponse("tu-1", "create_invoice", map[string]any{
+			"recipient_email": "kunde@example.com",
+			"currency_code":   "EUR",
+			"total":           "30.00",
+		}),
+	}}
+	ag := New(conv, mock, Options{ModelID: "m", MaxTokens: 256, ApprovalRequired: []string{"create_invoice"}})
+
+	res, err := ag.Respond(context.Background(), nil, "Create an invoice for 30 euros", i18n.MustGet("en-US"))
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if len(res.Pending) != 1 || res.Pending[0].Name != "create_invoice" {
+		t.Fatalf("pending = %+v, want one create_invoice", res.Pending)
+	}
+	// The confirmation card must show the exact dates the invoice will use, so
+	// the pending input carries a resolved invoice_date and due_date.
+	var input struct {
+		InvoiceDate string `json:"invoice_date"`
+		DueDate     string `json:"due_date"`
+	}
+	if err := json.Unmarshal(res.Pending[0].Input, &input); err != nil {
+		t.Fatalf("pending input not valid JSON: %v", err)
+	}
+	if _, err := time.Parse("2006-01-02", input.InvoiceDate); err != nil {
+		t.Errorf("invoice_date = %q, want a yyyy-MM-DD date", input.InvoiceDate)
+	}
+	if _, err := time.Parse("2006-01-02", input.DueDate); err != nil {
+		t.Errorf("due_date = %q, want a yyyy-MM-DD date", input.DueDate)
+	}
+}
+
+func TestRespondHonoursExplicitDueDateOnPendingCreateInvoice(t *testing.T) {
+	mock := paypal.NewMockProvider("shop@example.com")
+	// A due date one month out: valid, so it must be honoured on the card.
+	due := time.Now().UTC().AddDate(0, 1, 0).Format("2006-01-02")
+	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{
+		toolUseResponse("tu-1", "create_invoice", map[string]any{
+			"recipient_email": "kunde@example.com",
+			"currency_code":   "EUR",
+			"total":           "30.00",
+			"due_date":        due,
+		}),
+	}}
+	ag := New(conv, mock, Options{ModelID: "m", MaxTokens: 256, ApprovalRequired: []string{"create_invoice"}})
+
+	res, err := ag.Respond(context.Background(), nil, "Create an invoice due next month", i18n.MustGet("en-US"))
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if len(res.Pending) != 1 {
+		t.Fatalf("pending = %+v, want one create_invoice", res.Pending)
+	}
+	var input struct {
+		DueDate string `json:"due_date"`
+	}
+	if err := json.Unmarshal(res.Pending[0].Input, &input); err != nil {
+		t.Fatalf("pending input not valid JSON: %v", err)
+	}
+	if input.DueDate != due {
+		t.Errorf("due_date = %q, want %q (explicit value honoured on the card)", input.DueDate, due)
+	}
 }
 
 func TestRespondHoldsEveryGatedCallInTheTurn(t *testing.T) {
