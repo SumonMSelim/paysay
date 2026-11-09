@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -41,12 +42,21 @@ type Client struct {
 	pendingMu sync.Mutex
 	pending   map[int64]chan response
 
-	readErr chan error
-	closed  chan struct{}
-	closeMu sync.Once
+	// readDone is closed when the read loop exits (the server process died or
+	// its output closed); readErr holds why. Closing a channel wakes every
+	// waiting call, not just one.
+	readDone chan struct{}
+	readErr  error
+	closed   chan struct{}
+	closeMu  sync.Once
 
 	serverInfo ServerInfo
 }
+
+// ErrTransportClosed reports that the MCP server stopped responding, typically
+// because its process exited. The client cannot recover; callers should
+// launch a new server.
+var ErrTransportClosed = errors.New("mcp transport closed")
 
 // NewClient creates a client over the given transport and starts the background
 // read loop. Call Initialize before issuing other calls.
@@ -55,7 +65,7 @@ func NewClient(t Transport) *Client {
 		transport: t,
 		enc:       json.NewEncoder(t.Writer()),
 		pending:   make(map[int64]chan response),
-		readErr:   make(chan error, 1),
+		readDone:  make(chan struct{}),
 		closed:    make(chan struct{}),
 	}
 	go c.readLoop()
@@ -157,8 +167,8 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case err := <-c.readErr:
-		return nil, fmt.Errorf("mcp transport closed: %w", err)
+	case <-c.readDone:
+		return nil, fmt.Errorf("%w: %v", ErrTransportClosed, c.readErr)
 	case <-c.closed:
 		return nil, errors.New("mcp client closed")
 	case resp := <-ch:
@@ -213,10 +223,8 @@ func (c *Client) readLoop() {
 	if err == nil {
 		err = io.EOF
 	}
-	select {
-	case c.readErr <- err:
-	default:
-	}
+	c.readErr = err
+	close(c.readDone)
 }
 
 func marshalParams(params any) (json.RawMessage, error) {
@@ -244,7 +252,9 @@ type processTransport struct {
 // "KEY=VALUE" form expected by os/exec.
 func Launch(ctx context.Context, command string, args []string, env []string) (*Client, Transport, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Env = env
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

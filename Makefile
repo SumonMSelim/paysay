@@ -8,10 +8,7 @@ PKG := ./...
 AWS_PROFILE ?= sumonmselim
 AWS_REGION ?= us-east-1
 
-# PayPal sandbox OAuth endpoint for the `token` target.
-PAYPAL_OAUTH_URL ?= https://api-m.sandbox.paypal.com/v1/oauth2/token
-
-.PHONY: all build run run-local run-docker token login test test-race vet fmt tidy cover docker-build docker-up clean help
+.PHONY: all build run run-local run-docker login test test-race vet fmt tidy cover docker-build docker-up clean help
 
 all: vet test build
 
@@ -21,39 +18,20 @@ build: ## Build the server binary with embedded web assets.
 run: ## Run the server locally (reads env / .env via your shell).
 	go run ./cmd/paysay
 
-run-local: ## Run with the AWS SSO profile ($(AWS_PROFILE)) wired in. Set PAYPAL_ACCESS_TOKEN in your shell for live PayPal.
+run-local: ## Run with the AWS SSO profile ($(AWS_PROFILE)) wired in. Set PAYPAL_CLIENT_ID/PAYPAL_SECRET in your shell for live PayPal.
 	AWS_PROFILE=$(AWS_PROFILE) AWS_REGION=$(AWS_REGION) go run ./cmd/paysay
 
 run-docker: ## Run via docker compose, injecting resolved SSO credentials for the container.
 	@echo ">> exporting temporary credentials from profile '$(AWS_PROFILE)' into the compose environment"
-	@eval "$$(aws configure export-credentials --profile $(AWS_PROFILE) --format env)"; \
-		AWS_REGION=$(AWS_REGION) docker compose up --build
+	@creds="$$(aws configure export-credentials --profile $(AWS_PROFILE) --format env)" || { \
+		echo "error: could not export AWS credentials for '$(AWS_PROFILE)'; run 'make login' and try again" >&2; \
+		exit 1; \
+	}; \
+	eval "$$creds"; \
+	AWS_REGION=$(AWS_REGION) docker compose up --build
 
 login: ## Refresh the AWS SSO session for the profile (run if credentials expired).
 	aws sso login --profile $(AWS_PROFILE)
-
-# Mint a PayPal sandbox access token from client credentials and print an
-# export line you can eval. Requires PAYPAL_CLIENT_ID and PAYPAL_SECRET in the
-# environment (or your .env), plus `jq`.
-#
-#   export PAYPAL_CLIENT_ID=...   PAYPAL_SECRET=...
-#   eval "$(make -s token)"
-#
-# The printed token is valid for several hours; re-run when it expires.
-token: ## Mint a PayPal sandbox token; usage: eval "$(make -s token)"
-	@if [ -z "$$PAYPAL_CLIENT_ID" ] || [ -z "$$PAYPAL_SECRET" ]; then \
-		echo "error: set PAYPAL_CLIENT_ID and PAYPAL_SECRET in your environment first" >&2; \
-		echo "       (from https://developer.paypal.com -> Apps & Credentials -> Sandbox)" >&2; \
-		exit 1; \
-	fi
-	@TOKEN=$$(curl -s "$(PAYPAL_OAUTH_URL)" \
-		-u "$$PAYPAL_CLIENT_ID:$$PAYPAL_SECRET" \
-		-d grant_type=client_credentials | jq -r '.access_token // empty'); \
-	if [ -z "$$TOKEN" ]; then \
-		echo "error: failed to obtain token (check client id/secret and network)" >&2; \
-		exit 1; \
-	fi; \
-	echo "export PAYPAL_ACCESS_TOKEN=$$TOKEN"
 
 help: ## List available targets.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

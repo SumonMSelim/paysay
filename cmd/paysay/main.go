@@ -1,6 +1,6 @@
 // Command paysay is the PaySay server entrypoint. It wires configuration,
-// the Bedrock-backed agent, the PayPal tool provider (live over MCP when a
-// sandbox token is present, otherwise an in-memory mock so the app is always
+// the Bedrock-backed agent, the PayPal tool provider (live over MCP when
+// sandbox client credentials are present, otherwise an in-memory mock so the app is always
 // runnable), optional Polly text-to-speech, and the HTTP server.
 package main
 
@@ -64,6 +64,8 @@ func run(logger *slog.Logger) error {
 		MaxTokens:   cfg.Bedrock.MaxTokens,
 		Temperature: cfg.Bedrock.Temperature,
 		BrandName:   cfg.Brand.Name,
+
+		ApprovalRequired: paypal.ApprovalTools,
 	})
 
 	// Text-to-speech (optional).
@@ -90,23 +92,41 @@ func run(logger *slog.Logger) error {
 	return srv.Run(ctx)
 }
 
-// buildToolProvider returns a live MCP-backed PayPal provider when a sandbox
-// token is configured, otherwise a mock provider. The boolean reports live mode.
+// buildToolProvider returns a live MCP-backed PayPal provider when client
+// credentials are configured, otherwise a mock provider. The boolean reports live mode.
 func buildToolProvider(ctx context.Context, cfg *config.Config, logger *slog.Logger) (paypal.ToolProvider, bool, error) {
 	if err := cfg.RequireLiveCredentials(); err != nil {
-		if errors.Is(err, config.ErrMissingPayPalToken) {
-			logger.Warn("PAYPAL_ACCESS_TOKEN not set: running with in-memory mock PayPal provider (no real invoices will be created)")
+		if errors.Is(err, config.ErrMissingPayPalCredentials) {
+			logger.Warn("PayPal client credentials not set: running with in-memory mock PayPal provider (no real invoices will be created)")
 			return paypal.NewMockProvider(cfg.PayPal.MerchantEmail), false, nil
 		}
 		return nil, false, err
 	}
 
-	svc, err := paypal.NewService(ctx, paypal.LaunchConfig{
-		Command:     cfg.PayPal.MCPCommand,
-		Args:        cfg.PayPal.MCPArgs,
-		AccessToken: cfg.PayPal.AccessToken,
-		Environment: cfg.PayPal.Environment,
-	}, paypal.WithAllowedTools(paypal.InvoiceTools...))
+	opts := []paypal.Option{paypal.WithAllowedTools(paypal.InvoiceTools...)}
+	if cfg.PayPal.MerchantEmail != "" {
+		opts = append(opts, paypal.WithMerchantEmail(cfg.PayPal.MerchantEmail))
+	}
+	if cfg.PayPal.MerchantName != "" {
+		opts = append(opts, paypal.WithMerchantName(cfg.PayPal.MerchantName))
+	}
+	// launch starts the MCP server on the root context so the subprocess
+	// outlives any single request.
+	launch := func(accessToken string) (paypal.ToolProvider, error) {
+		return paypal.NewService(ctx, paypal.LaunchConfig{
+			Command:     cfg.PayPal.MCPCommand,
+			Args:        cfg.PayPal.MCPArgs,
+			AccessToken: accessToken,
+			Environment: cfg.PayPal.Environment,
+		}, opts...)
+	}
+
+	// Mint tokens from the client credentials and refresh before expiry, so a
+	// long-running deployment never runs on an expired token.
+	mint := func(ctx context.Context) (*paypal.TokenResponse, error) {
+		return paypal.FetchToken(ctx, cfg.PayPal.ClientID, cfg.PayPal.ClientSecret, cfg.PayPal.Environment)
+	}
+	svc, err := paypal.NewRefreshingProvider(ctx, mint, launch)
 	if err != nil {
 		return nil, false, err
 	}

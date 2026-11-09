@@ -3,78 +3,283 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PaySay — Run your business by voice</title>
+  <meta name="theme-color" content="#f6f4ef" />
+  <title>PaySay</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <a class="skip-link" href="#composer">Skip to voice input</a>
+  <!-- Icon sprite: referenced with <svg><use href="#i-name"/></svg>. -->
+  <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true">
+    <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+    <symbol id="i-invoice" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></symbol>
+    <symbol id="i-timeline" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 2v4M16 2v4M7 14h6M11 17h6"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-qr" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM21 14v.01M14 21h.01M17 21h4v-4"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+    <symbol id="i-plane" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/></symbol>
+  </svg>
 
-  <header class="app-header">
-    <h1 id="brand">PaySay</h1>
-    <p id="tagline" class="tagline">Run your business by voice.</p>
-    <p id="mode-badge" class="mode-badge" role="status" aria-live="polite"></p>
-  </header>
+  <a class="skip-link" href="#message" data-i18n="skip">Skip to assistant</a>
 
-  <main class="layout">
-    <section class="conversation-panel" aria-labelledby="conversation-heading">
-      <h2 id="conversation-heading" class="visually-hidden">Conversation</h2>
-
-      <div class="controls">
-        <label for="locale">Language</label>
-        <select id="locale" aria-describedby="locale-help"></select>
-        <span id="locale-help" class="visually-hidden">
-          Choose the language you want to speak and hear.
-        </span>
+  <div class="app">
+    <!-- Navigation sidebar (bottom tab bar on phones) -->
+    <aside class="sidebar" aria-label="Main">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div class="brand-text">
+          <span id="brand" class="brand-name">PaySay</span>
+          <span class="brand-sub" data-i18n="workspace">Merchant workspace</span>
+        </div>
       </div>
 
-      <ol id="messages" class="messages" aria-live="polite" aria-label="Conversation messages"></ol>
-
-      <form id="composer" class="composer" aria-label="Send a message to PaySay">
-        <label for="message" class="visually-hidden">Your message</label>
-        <input
-          id="message"
-          name="message"
-          type="text"
-          autocomplete="off"
-          placeholder="Speak or type, e.g. 'Create an invoice for 30 euros'"
-          aria-describedby="status"
-        />
-        <button id="mic" type="button" class="mic-button" aria-pressed="false"
-                aria-label="Start voice input">
-          <span aria-hidden="true">🎙️</span>
+      <nav class="nav">
+        <button type="button" class="nav-item" data-view="overview" aria-current="page">
+          <svg class="icon"><use href="#i-overview"/></svg><span data-i18n="nav.overview">Overview</span>
         </button>
-        <button id="send" type="submit" class="send-button">Send</button>
-      </form>
-      <p id="status" class="status" role="status" aria-live="polite"></p>
-    </section>
+        <button type="button" class="nav-item" data-view="invoices">
+          <svg class="icon"><use href="#i-invoice"/></svg><span data-i18n="nav.invoices">Invoices</span>
+          <span id="nav-invoice-count" class="nav-count">0</span>
+        </button>
+        <button type="button" class="nav-item" data-view="timeline">
+          <svg class="icon"><use href="#i-timeline"/></svg><span data-i18n="nav.timeline">Timeline</span>
+          <span id="nav-overdue-count" class="nav-count nav-count-alert" hidden>0</span>
+        </button>
+        <button type="button" class="nav-item" data-view="activity">
+          <svg class="icon"><use href="#i-activity"/></svg><span data-i18n="nav.activity">Agent activity</span>
+        </button>
+        <button type="button" class="nav-item nav-assistant" data-open-assistant>
+          <svg class="icon"><use href="#i-mic"/></svg><span data-i18n="nav.assistant">Assistant</span>
+        </button>
+      </nav>
 
-    <aside class="activity-panel" aria-labelledby="activity-heading">
-      <h2 id="activity-heading">Invoices</h2>
-      <p class="activity-help">
-        Your invoices update live as you talk. Click a column to sort, or use the
-        filters to find unpaid bills.
-      </p>
-      <div class="grid-toolbar">
-        <label for="status-filter">Show</label>
-        <select id="status-filter" aria-label="Filter invoices by status">
-          <option value="">All statuses</option>
-          <option value="DRAFT">Draft</option>
-          <option value="SENT">Sent</option>
-          <option value="UNPAID">Unpaid</option>
-          <option value="PAID">Paid</option>
-        </select>
-        <button id="refresh" type="button" class="refresh-button">Refresh</button>
+      <div class="sidebar-footer">
+        <label class="field-label" for="locale" data-i18n="language">Language</label>
+        <div class="select-wrap">
+          <svg class="icon"><use href="#i-globe"/></svg>
+          <select id="locale" class="locale-select"></select>
+        </div>
+        <div id="mode-badge" class="mode-badge" role="status"></div>
       </div>
-      <div id="invoice-grid" class="invoice-grid" role="region"
-           aria-label="Invoice table"></div>
-      <details class="tool-log">
-        <summary>Assistant actions</summary>
-        <ol id="tool-calls" class="tool-calls" aria-live="polite"></ol>
-      </details>
     </aside>
-  </main>
+
+    <!-- Workspace -->
+    <main class="main" id="main">
+      <header class="topbar">
+        <div>
+          <p id="view-kicker" class="kicker">01/ overview</p>
+          <h1 id="view-title" class="view-title">Today at a glance</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="refresh" type="button" class="btn btn-ghost" data-i18n-title="refresh">
+            <svg class="icon"><use href="#i-refresh"/></svg><span class="btn-label" data-i18n="refresh">Refresh</span>
+          </button>
+          <button id="chase" type="button" class="btn btn-primary">
+            <svg class="icon"><use href="#i-bell"/></svg><span data-i18n="chase">Chase unpaid</span>
+          </button>
+        </div>
+      </header>
+
+      <p id="load-error" class="banner" role="alert" hidden>
+        <svg class="icon"><use href="#i-alert"/></svg><span data-i18n="error.invoices">Couldn't load invoices from PayPal. Try Refresh.</span>
+      </p>
+
+      <!-- Overview -->
+      <section id="view-overview" class="view" aria-labelledby="view-title">
+        <article id="collections-card" class="collections-card" aria-labelledby="collections-title" hidden>
+          <div class="collections-head">
+            <div>
+              <p class="kicker" data-i18n="collections.kicker">daily check</p>
+              <h2 id="collections-title" class="collections-title"></h2>
+            </div>
+            <span id="collections-when" class="collections-when"></span>
+          </div>
+          <p id="collections-summary" class="collections-summary"></p>
+          <button id="collections-approve" type="button" class="btn btn-primary">
+            <svg class="icon"><use href="#i-bell"/></svg><span data-i18n="collections.approve">Approve reminders</span>
+          </button>
+        </article>
+
+        <div class="kpis">
+          <article class="kpi">
+            <span class="kpi-label" data-i18n="kpi.outstanding">Outstanding</span>
+            <span id="kpi-outstanding" class="kpi-value">–</span>
+            <span id="kpi-outstanding-hint" class="kpi-hint"></span>
+          </article>
+          <article class="kpi">
+            <span class="kpi-label" data-i18n="kpi.collected">Collected</span>
+            <span id="kpi-collected" class="kpi-value">–</span>
+            <span id="kpi-collected-hint" class="kpi-hint"></span>
+          </article>
+          <article class="kpi">
+            <span class="kpi-label" data-i18n="kpi.drafts">Drafts</span>
+            <span id="kpi-drafts" class="kpi-value">–</span>
+            <span class="kpi-hint" data-i18n="kpi.draftsHint">not sent yet</span>
+          </article>
+          <article class="kpi">
+            <span class="kpi-label" data-i18n="kpi.rate">Collection rate</span>
+            <span id="kpi-rate" class="kpi-value">–</span>
+            <span id="kpi-rate-bar" class="kpi-bar"><i></i></span>
+          </article>
+        </div>
+
+        <div class="overview-grid">
+          <section class="panel" aria-labelledby="attention-title">
+            <header class="panel-head">
+              <h2 id="attention-title" class="panel-title" data-i18n="attention.title">Needs attention</h2>
+            </header>
+            <ul id="attention" class="attention"></ul>
+          </section>
+
+          <section class="panel panel-wide" aria-labelledby="recent-title">
+            <header class="panel-head">
+              <h2 id="recent-title" class="panel-title" data-i18n="recent.title">Recent invoices</h2>
+              <button type="button" class="link-btn" data-view="invoices" data-i18n="recent.all">View all</button>
+            </header>
+            <div id="recent-grid" class="grid grid-compact"></div>
+          </section>
+        </div>
+      </section>
+
+      <!-- Invoices -->
+      <section id="view-invoices" class="view" hidden>
+        <div class="toolbar">
+          <div class="search">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <input id="quick-filter" type="search" autocomplete="off" data-i18n-placeholder="search" placeholder="Search invoices…" />
+          </div>
+          <div class="segmented" role="group" data-i18n-aria="filter.status" id="status-filter">
+            <button type="button" data-status="" aria-pressed="true" data-i18n="filter.all">All</button>
+            <button type="button" data-status="DRAFT" aria-pressed="false" data-i18n="status.DRAFT">Draft</button>
+            <button type="button" data-status="OPEN" aria-pressed="false" data-i18n="filter.open">Awaiting payment</button>
+            <button type="button" data-status="PAID" aria-pressed="false" data-i18n="status.PAID">Paid</button>
+          </div>
+          <label class="toggle">
+            <input id="scope-mine" type="checkbox" />
+            <span data-i18n="filter.mine">Created by me</span>
+          </label>
+        </div>
+        <div id="invoice-grid" class="grid grid-full"></div>
+      </section>
+
+      <!-- Timeline -->
+      <section id="view-timeline" class="view" hidden>
+        <p id="timeline-missing" class="banner" role="status" hidden>
+          <svg class="icon"><use href="#i-alert"/></svg><span data-i18n="timeline.missing">Timeline view not included in this build</span>
+        </p>
+        <div id="timeline-body" class="timeline-body">
+          <div class="toolbar">
+            <div class="search">
+              <svg class="icon"><use href="#i-search"/></svg>
+              <input id="timeline-filter" type="search" autocomplete="off" data-i18n-placeholder="timeline.search" placeholder="Filter by customer…" />
+            </div>
+            <div id="timeline-overdue-chip" class="timeline-overdue-chip" role="status">
+              <svg class="icon"><use href="#i-alert"/></svg><span id="timeline-overdue-text"></span>
+            </div>
+          </div>
+          <div id="timeline-scheduler" class="timeline-scheduler"></div>
+        </div>
+      </section>
+
+      <!-- Activity -->
+      <section id="view-activity" class="view" hidden>
+        <ol id="activity" class="activity"></ol>
+        <p id="activity-empty" class="empty-note" data-i18n="activity.empty">Every action the assistant takes on your PayPal account is listed here.</p>
+      </section>
+    </main>
+
+    <!-- Assistant (docked on desktop, sheet on phones) -->
+    <aside id="assistant" class="assistant" aria-labelledby="assistant-title">
+      <header class="assistant-head">
+        <div>
+          <h2 id="assistant-title" class="assistant-title">
+            <svg class="icon"><use href="#i-spark"/></svg><span data-i18n="assistant.title">Assistant</span>
+          </h2>
+          <p id="assistant-sub" class="assistant-sub"></p>
+        </div>
+        <button id="new-chat" type="button" class="icon-btn" data-i18n-title="chat.new" data-i18n-aria="chat.new">
+          <svg class="icon"><use href="#i-chat"/></svg>
+        </button>
+        <div class="select-wrap assistant-locale">
+          <svg class="icon"><use href="#i-globe"/></svg>
+          <select class="locale-select" data-i18n-aria="language"></select>
+        </div>
+        <button type="button" class="icon-btn assistant-close" data-close-assistant data-i18n-aria="close">
+          <svg class="icon"><use href="#i-x"/></svg>
+        </button>
+      </header>
+
+      <div id="conversation" class="conversation">
+        <div id="welcome" class="welcome">
+          <p class="welcome-kicker" data-i18n="assistant.kicker">speak in your language</p>
+          <p class="welcome-title" data-i18n="assistant.greeting">What would you like to do?</p>
+          <div id="suggestions" class="suggestions"></div>
+        </div>
+        <ol id="messages" class="messages" aria-live="polite"></ol>
+      </div>
+
+      <div class="composer-wrap">
+        <div id="quick-replies" class="quick-replies" hidden>
+          <button type="button" class="btn btn-primary btn-lg" data-reply="yes">
+            <svg class="icon"><use href="#i-check"/></svg><span data-i18n="reply.yes">Yes, go ahead</span>
+          </button>
+          <button type="button" class="btn btn-ghost btn-lg" data-reply="no">
+            <span data-i18n="reply.no">Cancel</span>
+          </button>
+        </div>
+        <button id="mic" type="button" class="mic" aria-pressed="false">
+          <span class="mic-orb"><svg class="icon"><use href="#i-mic"/></svg></span>
+          <span id="mic-label" class="mic-label" data-i18n="mic.idle">Tap and speak</span>
+        </button>
+        <form id="composer" class="composer">
+          <label for="message" class="visually-hidden" data-i18n="input.label">Type a request</label>
+          <input id="message" type="text" autocomplete="off" data-i18n-placeholder="input.placeholder" placeholder="…or type a request" />
+          <button id="send" type="submit" class="icon-btn icon-btn-solid" data-i18n-aria="send">
+            <svg class="icon"><use href="#i-send"/></svg>
+          </button>
+        </form>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Payment QR -->
+  <dialog id="qr-modal" class="modal" aria-labelledby="qr-title">
+    <header class="modal-head">
+      <div>
+        <p class="kicker" data-i18n="qr.kicker">pay at the counter</p>
+        <h2 id="qr-title" class="modal-title" data-i18n="qr.title">Scan to pay</h2>
+      </div>
+      <button id="qr-close" type="button" class="icon-btn" data-i18n-aria="close">
+        <svg class="icon"><use href="#i-x"/></svg>
+      </button>
+    </header>
+    <div id="qr-image" class="qr-image"></div>
+    <dl class="qr-meta">
+      <div><dt data-i18n="qr.amount">Amount</dt><dd id="qr-amount">–</dd></div>
+      <div><dt data-i18n="qr.invoice">Invoice</dt><dd id="qr-id" class="mono">–</dd></div>
+    </dl>
+    <p class="qr-note" data-i18n="qr.note">Your customer scans this with their phone camera or the PayPal app.</p>
+    <a id="qr-link" class="btn btn-ghost btn-block" href="#" target="_blank" rel="noopener noreferrer">
+      <span data-i18n="qr.open">Open payment page</span><svg class="icon"><use href="#i-external"/></svg>
+    </a>
+  </dialog>
 
   <script src="/vendor/ag-grid-community.min.js"></script>
+  <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

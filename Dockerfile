@@ -1,5 +1,20 @@
 # syntax=docker/dockerfile:1
 
+# --- bryntum stage -------------------------------------------------------
+# Bryntum Scheduler trial bundle is fetched at build time under its commercial
+# trial licence. Only prebuilt browser assets needed by the app are copied
+# into the web assets directory before go build.
+FROM node:22-alpine AS bryntum
+
+WORKDIR /bryntum
+RUN npm install @bryntum/scheduler@npm:@bryntum/scheduler-trial@7.3.8
+RUN mkdir -p /out/bryntum/locales && \
+    cd node_modules/@bryntum/scheduler && \
+    cp scheduler.umd.js scheduler.css stockholm-light.css /out/bryntum/ && \
+    cp -r fontawesome /out/bryntum/ && \
+    cp -r fonts /out/bryntum/ && \
+    cp locales/scheduler.locale.De.js locales/scheduler.locale.Th.js locales/scheduler.locale.En.js /out/bryntum/locales/
+
 # --- build stage ---------------------------------------------------------
 # Compile the Go binary with the web assets embedded. CGO is disabled for a
 # static binary that runs on the slim runtime image.
@@ -12,6 +27,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+COPY --from=bryntum /out/bryntum /src/internal/web/assets/vendor/bryntum
 
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /out/paysay ./cmd/paysay

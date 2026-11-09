@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 )
 
 // InvoiceLister is the read-only capability the server needs to populate the
@@ -27,16 +29,20 @@ type toolResult struct {
 // mock provider and the real PayPal Invoicing v2 response.
 type InvoiceRow struct {
 	ID       string `json:"id"`
+	Number   string `json:"number"`
 	Status   string `json:"status"`
 	Customer string `json:"customer"`
 	Amount   string `json:"amount"`
 	Currency string `json:"currency"`
 	Created  string `json:"created"`
+	Due      string `json:"due"`
+	Paid     string `json:"paid,omitempty"`
 }
 
 // handleInvoices returns the merchant's invoices as normalized rows for the
 // AG Grid dashboard. It calls the list_invoices tool and tolerates both the
-// mock shape and the PayPal Invoicing v2 shape.
+// mock shape and the PayPal Invoicing v2 shape. With ?scope=mine it returns
+// only the invoices this browser session created.
 func (s *Server) handleInvoices(w http.ResponseWriter, r *http.Request) {
 	if s.invoices == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"invoices": []InvoiceRow{}})
@@ -59,9 +65,70 @@ func (s *Server) handleInvoices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows := normalizeInvoices(res.Text)
+	if r.URL.Query().Get("scope") == "mine" {
+		rows = s.sessions.filter(sessionID(w, r), rows)
+	}
 	// Most-recent first for a sensible default order.
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Created > rows[j].Created })
 	writeJSON(w, http.StatusOK, map[string]any{"invoices": rows})
+}
+
+// handleInvoiceQR generates a scannable payment QR code for an invoice.
+func (s *Server) handleInvoiceQR(w http.ResponseWriter, r *http.Request) {
+	if s.invoices == nil {
+		writeError(w, http.StatusNotFound, "invoice service not available")
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "invoice ID is required")
+		return
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"invoice_id": id,
+		"width":      300,
+		"height":     300,
+	})
+
+	res, err := s.invoices.Invoke(r.Context(), "generate_invoice_qr_code", args)
+	if err != nil || res.IsError {
+		s.log.Error("generate qr code failed", "invoice_id", id, "error", err, "tool_error", res.IsError)
+		writeError(w, http.StatusBadGateway, "could not generate QR code")
+		return
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(res.Text), &data); err != nil {
+		data = map[string]any{}
+	}
+
+	// Clean up base64 image if wrapped in multipart text by PayPal MCP
+	if img, ok := extractBase64Image(res.Text); ok {
+		data["image"] = img
+	}
+
+	host := "www.sandbox.paypal.com"
+	if s.cfg.PayPal.Environment == "PRODUCTION" {
+		host = "www.paypal.com"
+	}
+	payURL := fmt.Sprintf("https://%s/invoice/p/#%s", host, id)
+	data["invoice_id"] = id
+	data["payment_url"] = payURL
+	writeJSON(w, http.StatusOK, data)
+}
+
+func extractBase64Image(raw string) (string, bool) {
+	idx := strings.Index(raw, "iVBORw0KGgo")
+	if idx == -1 {
+		return "", false
+	}
+	end := strings.IndexAny(raw[idx:], "\r\n\"\\")
+	if end == -1 {
+		return raw[idx:], true
+	}
+	return raw[idx : idx+end], true
 }
 
 // rawInvoiceList models the union of fields we read from either provider shape.
@@ -79,11 +146,22 @@ type rawInvoice struct {
 	CurrencyFlat string `json:"currency_code"`
 	Total        string `json:"total"`
 	CreateTime   string `json:"create_time"`
+	NumberFlat   string `json:"invoice_number"`
+	DueDateFlat  string `json:"due_date"`
+	PaidDateFlat string `json:"paid_date"`
 
 	// PayPal v2 (nested) shape.
 	Detail struct {
-		CurrencyCode string `json:"currency_code"`
-		CreateTime   string `json:"create_time"`
+		CurrencyCode  string `json:"currency_code"`
+		CreateTime    string `json:"create_time"`
+		InvoiceNumber string `json:"invoice_number"`
+		PaymentTerm   struct {
+			DueDate string `json:"due_date"`
+		} `json:"payment_term"`
+		Metadata struct {
+			CreateTime     string `json:"create_time"`
+			LastUpdateTime string `json:"last_update_time"`
+		} `json:"metadata"`
 	} `json:"detail"`
 	Amount struct {
 		Value        string `json:"value"`
@@ -94,6 +172,12 @@ type rawInvoice struct {
 			Email string `json:"email_address"`
 		} `json:"billing_info"`
 	} `json:"primary_recipients"`
+	Payments struct {
+		Transactions []struct {
+			PaymentDate string `json:"payment_date"`
+			PaymentTime string `json:"payment_time"`
+		} `json:"transactions"`
+	} `json:"payments"`
 }
 
 // normalizeInvoices parses a list_invoices tool result (either shape) into rows.
@@ -105,6 +189,10 @@ func normalizeInvoices(raw string) []InvoiceRow {
 	rows := make([]InvoiceRow, 0, len(list.Items))
 	for _, it := range list.Items {
 		row := InvoiceRow{ID: it.ID, Status: it.Status}
+
+		// Number: the merchant-facing invoice number (e.g. "0007"), distinct
+		// from the resource ID. Live PayPal puts it under detail.invoice_number.
+		row.Number = firstNonEmpty(it.NumberFlat, it.Detail.InvoiceNumber)
 
 		// Customer: mock flat field, else first primary recipient email.
 		row.Customer = it.Recipient
@@ -118,8 +206,21 @@ func normalizeInvoices(raw string) []InvoiceRow {
 		// Amount: flat total, else nested amount value.
 		row.Amount = firstNonEmpty(it.Total, it.Amount.Value)
 
-		// Created: flat, else nested detail.
-		row.Created = firstNonEmpty(it.CreateTime, it.Detail.CreateTime)
+		// Created: flat, else nested detail. Live PayPal responses put it under
+		// detail.metadata.
+		row.Created = firstNonEmpty(it.CreateTime, it.Detail.CreateTime, it.Detail.Metadata.CreateTime)
+
+		// Due: flat field, else nested payment_term.due_date.
+		row.Due = firstNonEmpty(it.DueDateFlat, it.Detail.PaymentTerm.DueDate)
+
+		// Paid: flat, else payment transaction date, else last update time if paid.
+		var paymentDate string
+		if len(it.Payments.Transactions) > 0 {
+			paymentDate = firstNonEmpty(it.Payments.Transactions[0].PaymentDate, it.Payments.Transactions[0].PaymentTime)
+		}
+		if strings.EqualFold(it.Status, "PAID") {
+			row.Paid = firstNonEmpty(it.PaidDateFlat, paymentDate, it.Detail.Metadata.LastUpdateTime)
+		}
 
 		rows = append(rows, row)
 	}

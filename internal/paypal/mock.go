@@ -31,6 +31,8 @@ type mockInvoice struct {
 	Total      string          `json:"total"`
 	Items      json.RawMessage `json:"items,omitempty"`
 	CreateTime string          `json:"create_time"`
+	DueDate    string          `json:"due_date,omitempty"`
+	PaidDate   string          `json:"paid_date,omitempty"`
 }
 
 // NewMockProvider creates a mock provider attributed to the given merchant
@@ -53,7 +55,7 @@ func (m *MockProvider) Tools(ctx context.Context) ([]ToolDescriptor, error) {
 		{
 			Name:        "create_invoice",
 			Description: "Create a new draft invoice for a customer with line items.",
-			InputSchema: schema(`{"type":"object","properties":{"recipient_email":{"type":"string"},"currency_code":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"quantity":{"type":"string"},"unit_amount":{"type":"string"}}}},"note":{"type":"string"}},"required":["currency_code","items"]}`),
+			InputSchema: schema(`{"type":"object","properties":{"recipient_email":{"type":"string"},"currency_code":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"quantity":{"type":"string"},"unit_amount":{"type":"string"}}}},"note":{"type":"string"},"due_date":{"type":"string"}},"required":["currency_code","items"]}`),
 		},
 		{
 			Name:        "send_invoice",
@@ -75,6 +77,11 @@ func (m *MockProvider) Tools(ctx context.Context) ([]ToolDescriptor, error) {
 			Description: "Send a payment reminder for a sent, unpaid invoice.",
 			InputSchema: schema(`{"type":"object","properties":{"invoice_id":{"type":"string"}},"required":["invoice_id"]}`),
 		},
+		{
+			Name:        "generate_invoice_qr_code",
+			Description: "Generate a scannable QR code for customer mobile payment of an invoice.",
+			InputSchema: schema(`{"type":"object","properties":{"invoice_id":{"type":"string"},"width":{"type":"number"},"height":{"type":"number"}},"required":["invoice_id"]}`),
+		},
 	}, nil
 }
 
@@ -94,6 +101,8 @@ func (m *MockProvider) Invoke(ctx context.Context, name string, args json.RawMes
 		return m.listInvoices(args)
 	case "get_invoice":
 		return m.getInvoice(args)
+	case "generate_invoice_qr_code":
+		return m.generateQRCode(args)
 	default:
 		return ToolResult{IsError: true, Text: fmt.Sprintf(`{"error":"unknown tool %q"}`, name)}, nil
 	}
@@ -108,6 +117,7 @@ func (m *MockProvider) createInvoice(args json.RawMessage) (ToolResult, error) {
 		Currency       string          `json:"currency_code"`
 		Items          json.RawMessage `json:"items"`
 		Total          string          `json:"total"`
+		DueDate        string          `json:"due_date"`
 	}
 	_ = json.Unmarshal(args, &in)
 	if in.Currency == "" {
@@ -131,6 +141,7 @@ func (m *MockProvider) createInvoice(args json.RawMessage) (ToolResult, error) {
 		Total:      firstNonEmpty(total, "0.00"),
 		Items:      in.Items,
 		CreateTime: time.Now().UTC().Format(time.RFC3339),
+		DueDate:    in.DueDate,
 	}
 	m.invoices[id] = inv
 	return marshalResult(inv)
@@ -207,6 +218,9 @@ func (m *MockProvider) mutateStatus(args json.RawMessage, status string) (ToolRe
 		return notFound(id)
 	}
 	inv.Status = status
+	if status == "PAID" && inv.PaidDate == "" {
+		inv.PaidDate = time.Now().UTC().Format(time.RFC3339)
+	}
 	return marshalResult(inv)
 }
 
@@ -241,6 +255,24 @@ func (m *MockProvider) getInvoice(args json.RawMessage) (ToolResult, error) {
 		return notFound(id)
 	}
 	return marshalResult(inv)
+}
+
+func (m *MockProvider) generateQRCode(args json.RawMessage) (ToolResult, error) {
+	id := invoiceID(args)
+	inv, ok := m.invoices[id]
+	if !ok {
+		return notFound(id)
+	}
+	// Return a standard payment URI and demo SVG payload for instant scanning
+	payURL := fmt.Sprintf("https://www.sandbox.paypal.com/invoice/p/#%s", inv.ID)
+	return marshalResult(map[string]any{
+		"invoice_id":   inv.ID,
+		"qr_image_url": fmt.Sprintf("https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=%s", payURL),
+		"payment_url":  payURL,
+		"status":       inv.Status,
+		"total":        inv.Total,
+		"currency":     inv.Currency,
+	})
 }
 
 // --- helpers ---

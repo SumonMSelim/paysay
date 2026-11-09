@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -196,5 +199,266 @@ func TestReplyStripsThinkingBlocks(t *testing.T) {
 	}
 	if res.Reply != "Hallo! Wie kann ich helfen?" {
 		t.Errorf("reply = %q, want the clean greeting", res.Reply)
+	}
+}
+
+func TestBuildInitialMessagesReplaysToolCallsAsBlocks(t *testing.T) {
+	history := []Turn{
+		{Role: "user", Text: "Create an invoice for 50 USD"},
+		{
+			Role: "assistant",
+			Text: "I created invoice INV2-TEST1234.",
+			ToolCalls: []ToolCall{{
+				Name:   "create_invoice",
+				Input:  json.RawMessage(`{"currency_code":"USD"}`),
+				Output: `{"id":"INV2-TEST1234","status":"DRAFT"}`,
+			}},
+		},
+	}
+
+	msgs := buildInitialMessages(history, "Please send it")
+	// user, assistant tool use, user tool result, assistant text, new user message
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(msgs))
+	}
+	if _, ok := msgs[1].Content[0].(*types.ContentBlockMemberToolUse); !ok {
+		t.Fatalf("message 1 = %T, want a tool-use block", msgs[1].Content[0])
+	}
+	res, ok := msgs[2].Content[0].(*types.ContentBlockMemberToolResult)
+	if !ok {
+		t.Fatalf("message 2 = %T, want a tool-result block", msgs[2].Content[0])
+	}
+	text := res.Value.Content[0].(*types.ToolResultContentBlockMemberText).Value
+	if !strings.Contains(text, "INV2-TEST1234") {
+		t.Errorf("tool result = %q, want the invoice output", text)
+	}
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			if tb, ok := c.(*types.ContentBlockMemberText); ok && strings.Contains(tb.Value, "[Action") {
+				t.Errorf("history contains a text action summary the model could imitate: %q", tb.Value)
+			}
+		}
+	}
+}
+
+func TestBuildInitialMessagesMarksDeclinedProposal(t *testing.T) {
+	history := []Turn{
+		{Role: "user", Text: "Remind maria"},
+		{
+			Role:     "assistant",
+			Proposed: []ToolCall{{Name: "send_invoice_reminder", Input: json.RawMessage(`{"invoice_id":"INV2-A"}`)}},
+			Declined: true,
+		},
+	}
+	msgs := buildInitialMessages(history, "ok")
+	res := msgs[2].Content[0].(*types.ContentBlockMemberToolResult)
+	text := res.Value.Content[0].(*types.ToolResultContentBlockMemberText).Value
+	if !strings.Contains(text, "declined") {
+		t.Errorf("result = %q, want the decline recorded", text)
+	}
+	if tb := msgs[3].Content[0].(*types.ContentBlockMemberText); strings.TrimSpace(tb.Value) == "" {
+		t.Error("empty assistant text would be rejected by Bedrock")
+	}
+}
+
+func TestRespondHoldsGatedToolForApproval(t *testing.T) {
+	mock := paypal.NewMockProvider("shop@example.com")
+	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{
+		toolUseResponse("tu-1", "send_invoice", map[string]any{"invoice_id": "INV2-ABC"}),
+	}}
+	ag := New(conv, mock, Options{ModelID: "m", MaxTokens: 256, ApprovalRequired: []string{"send_invoice"}})
+
+	res, err := ag.Respond(context.Background(), nil, "Send invoice INV2-ABC", i18n.MustGet("en-US"))
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if len(res.Pending) != 1 || res.Pending[0].Name != "send_invoice" {
+		t.Fatalf("pending = %+v, want send_invoice", res.Pending)
+	}
+	if !strings.Contains(string(res.Pending[0].Input), "INV2-ABC") {
+		t.Errorf("pending input = %s, want the invoice id", res.Pending[0].Input)
+	}
+	if res.Pending[0].Output != "" || len(res.ToolCalls) != 0 {
+		t.Errorf("gated tool must not run: pending=%+v calls=%+v", res.Pending, res.ToolCalls)
+	}
+	if conv.calls != 1 {
+		t.Errorf("converse calls = %d, want 1 (loop stops at the gated tool)", conv.calls)
+	}
+}
+
+func TestRespondRunsUngatedToolsWithGateConfigured(t *testing.T) {
+	mock := paypal.NewMockProvider("")
+	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{
+		toolUseResponse("tu-1", "list_invoices", map[string]any{}),
+		textResponse("You have no invoices."),
+	}}
+	ag := New(conv, mock, Options{ModelID: "m", MaxTokens: 256, ApprovalRequired: []string{"send_invoice"}})
+
+	res, err := ag.Respond(context.Background(), nil, "List invoices", i18n.MustGet("en-US"))
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if len(res.Pending) != 0 {
+		t.Errorf("read-only tool should not need approval: %+v", res.Pending)
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Name != "list_invoices" {
+		t.Errorf("tool calls = %+v, want list_invoices executed", res.ToolCalls)
+	}
+}
+
+type failingConverser struct{}
+
+func (failingConverser) Converse(context.Context, *bedrockruntime.ConverseInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error) {
+	return nil, errors.New("get credentials: token expired")
+}
+
+func TestRespondWrapsModelFailure(t *testing.T) {
+	ag := New(failingConverser{}, paypal.NewMockProvider(""), Options{ModelID: "m", MaxTokens: 256})
+	_, err := ag.Respond(context.Background(), nil, "hi", i18n.MustGet("en-US"))
+	if !errors.Is(err, ErrModelUnavailable) {
+		t.Errorf("err = %v, want ErrModelUnavailable", err)
+	}
+}
+
+func TestShowInvoicesIsOfferedAndNeverReachesPayPal(t *testing.T) {
+	tools := &countingProvider{ToolProvider: paypal.NewMockProvider("")}
+	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{
+		toolUseResponse("tu-1", ShowInvoicesTool, map[string]any{"status": "OPEN", "customer": "anna"}),
+		textResponse("Here are Anna's open invoices."),
+	}}
+	ag := newTestAgent(conv, tools)
+
+	res, err := ag.Respond(context.Background(), nil, "Show me Anna's unpaid invoices", i18n.MustGet("en-US"))
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	offered := false
+	for _, tool := range conv.lastInput.ToolConfig.Tools {
+		if spec, ok := tool.(*types.ToolMemberToolSpec); ok && aws.ToString(spec.Value.Name) == ShowInvoicesTool {
+			offered = true
+		}
+	}
+	if !offered {
+		t.Error("show_invoices was not offered to the model")
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Name != ShowInvoicesTool || res.ToolCalls[0].IsError {
+		t.Fatalf("tool calls = %+v, want one successful show_invoices", res.ToolCalls)
+	}
+	if !strings.Contains(string(res.ToolCalls[0].Input), "anna") {
+		t.Errorf("input = %s, want the customer filter passed to the UI", res.ToolCalls[0].Input)
+	}
+	if tools.invokes != 0 {
+		t.Errorf("PayPal provider was called %d times for a screen-only tool", tools.invokes)
+	}
+}
+
+func TestShowTimelineIsOfferedAndNeverReachesPayPal(t *testing.T) {
+	tools := &countingProvider{ToolProvider: paypal.NewMockProvider("")}
+	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{
+		toolUseResponse("tu-1", ShowTimelineTool, map[string]any{"customer": "anna"}),
+		textResponse("Here is Anna's payment timeline."),
+	}}
+	ag := newTestAgent(conv, tools)
+
+	res, err := ag.Respond(context.Background(), nil, "Show me Anna's payment timeline", i18n.MustGet("en-US"))
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	offered := false
+	for _, tool := range conv.lastInput.ToolConfig.Tools {
+		if spec, ok := tool.(*types.ToolMemberToolSpec); ok && aws.ToString(spec.Value.Name) == ShowTimelineTool {
+			offered = true
+		}
+	}
+	if !offered {
+		t.Error("show_timeline was not offered to the model")
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Name != ShowTimelineTool || res.ToolCalls[0].IsError {
+		t.Fatalf("tool calls = %+v, want one successful show_timeline", res.ToolCalls)
+	}
+	if !strings.Contains(string(res.ToolCalls[0].Input), "anna") {
+		t.Errorf("input = %s, want the customer filter passed to the UI", res.ToolCalls[0].Input)
+	}
+	if tools.invokes != 0 {
+		t.Errorf("PayPal provider was called %d times for a screen-only tool", tools.invokes)
+	}
+}
+
+// countingProvider counts Invoke calls on a wrapped provider.
+type countingProvider struct {
+	paypal.ToolProvider
+	invokes int
+}
+
+func (c *countingProvider) Invoke(ctx context.Context, name string, args json.RawMessage) (paypal.ToolResult, error) {
+	c.invokes++
+	return c.ToolProvider.Invoke(ctx, name, args)
+}
+
+func TestBuildInitialMessagesBoundsHistory(t *testing.T) {
+	var history []Turn
+	for i := 0; i < 30; i++ {
+		history = append(history,
+			Turn{Role: "user", Text: "q"},
+			Turn{Role: "assistant", Text: "a", ToolCalls: []ToolCall{{Name: "list_invoices", Output: strings.Repeat("x", 5000)}}},
+		)
+	}
+	msgs := buildInitialMessages(history, "latest")
+
+	// Each kept exchange is user, tool use, tool result, assistant text.
+	if want := maxHistoryTurns/2*4 + 1; len(msgs) != want {
+		t.Fatalf("messages = %d, want %d (capped history + new message)", len(msgs), want)
+	}
+	if msgs[0].Role != types.ConversationRoleUser {
+		t.Errorf("first message role = %s, want user", msgs[0].Role)
+	}
+	res := msgs[2].Content[0].(*types.ContentBlockMemberToolResult)
+	text := res.Value.Content[0].(*types.ToolResultContentBlockMemberText).Value
+	if len(text) > maxToolOutputInTurn+100 {
+		t.Errorf("tool output in history is %d bytes, want it truncated", len(text))
+	}
+}
+
+func TestTruncateKeepsUTF8Valid(t *testing.T) {
+	got := truncate("ใบแจ้งหนี้", 4) // Thai characters are 3 bytes each
+	if !utf8.ValidString(got) {
+		t.Errorf("truncate produced invalid UTF-8: %q", got)
+	}
+}
+
+func TestConcurrentFirstRequestsShareToolConfig(t *testing.T) {
+	ag := New(&scriptedConverser{}, paypal.NewMockProvider(""), Options{ModelID: "m", MaxTokens: 256})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := ag.ensureToolConfig(context.Background()); err != nil {
+				t.Errorf("ensureToolConfig: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestRespondHoldsEveryGatedCallInTheTurn(t *testing.T) {
+	two := &bedrockruntime.ConverseOutput{Output: &types.ConverseOutputMemberMessage{Value: types.Message{
+		Role: types.ConversationRoleAssistant,
+		Content: []types.ContentBlock{
+			&types.ContentBlockMemberToolUse{Value: types.ToolUseBlock{ToolUseId: aws.String("a"), Name: aws.String("send_invoice_reminder"),
+				Input: brdoc.NewLazyDocument(map[string]any{"invoice_id": "INV2-A"})}},
+			&types.ContentBlockMemberToolUse{Value: types.ToolUseBlock{ToolUseId: aws.String("b"), Name: aws.String("send_invoice_reminder"),
+				Input: brdoc.NewLazyDocument(map[string]any{"invoice_id": "INV2-B"})}},
+		},
+	}}}
+	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{two}}
+	ag := New(conv, paypal.NewMockProvider(""), Options{ModelID: "m", MaxTokens: 256, ApprovalRequired: []string{"send_invoice_reminder"}})
+
+	res, err := ag.Respond(context.Background(), nil, "Remind everyone who has not paid", i18n.MustGet("en-US"))
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if len(res.Pending) != 2 {
+		t.Fatalf("pending = %d calls, want both reminders held for one approval", len(res.Pending))
 	}
 }

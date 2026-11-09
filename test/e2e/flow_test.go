@@ -1,14 +1,16 @@
 // Package e2e exercises PaySay end to end: a real HTTP server, the real agent
 // tool-use loop, the real i18n/prompt layer, and the real PayPal mock provider.
 // Only the Bedrock model is faked, with a scripted Converser that behaves like
-// Nova deciding to create and then send an invoice. This verifies the whole
-// voice-to-invoice path (minus live AWS/PayPal network calls) in one test.
+// Nova deciding to create an invoice, which the merchant then approves. This
+// verifies the whole voice-to-invoice path (minus live AWS/PayPal network
+// calls) in one test.
 package e2e
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -51,79 +53,104 @@ func assistantToolUse(id, name string, input map[string]any) *bedrockruntime.Con
 					Input: brdoc.NewLazyDocument(input)}}}}}}
 }
 
-func TestEndToEndCreateAndSendInvoiceGerman(t *testing.T) {
-	// Scripted model: create invoice -> send invoice -> final German reply.
+func TestEndToEndCreateInvoiceGermanWithApproval(t *testing.T) {
+	// Scripted model: asks to create an invoice. Creating is money-moving, so
+	// the agent must hold it for the merchant's approval instead of running it.
 	model := &scriptedModel{steps: []*bedrockruntime.ConverseOutput{
 		assistantToolUse("t1", "create_invoice", map[string]any{
 			"recipient_email": "kunde@example.com",
 			"currency_code":   "EUR",
 			"total":           "30.00",
 		}),
-		// The agent feeds back the created invoice; here the model sends it.
-		// It does not need the real id for this scripted step because the mock
-		// assigns one; a real model would read it from the tool result.
-		assistantText("Ich habe die Rechnung über 30,00 EUR erstellt und bin bereit, sie zu senden."),
 	}}
 
 	cfg := loadTestConfig(t)
 	tools := paypal.NewMockProvider("shop@example.com")
 	ag := agent.New(bedrock.NewWithAPI(model), tools, agent.Options{
-		ModelID:   "us.amazon.nova-pro-v1:0",
-		MaxTokens: 1024,
-		BrandName: cfg.Brand.Name,
+		ModelID:          "us.amazon.nova-pro-v1:0",
+		MaxTokens:        1024,
+		BrandName:        cfg.Brand.Name,
+		ApprovalRequired: paypal.ApprovalTools,
 	})
-	srv := server.New(server.Options{Config: cfg, Agent: ag})
+	srv := server.New(server.Options{Config: cfg, Agent: ag, Invoices: server.NewInvoiceListerAdapter(shim{tools})})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	// Call the chat endpoint as the browser would.
+	// The browser keeps the session cookie between chat and approval.
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+
 	body := `{"message":"Erstelle eine Rechnung über 30 Euro für kunde@example.com","locale":"de-DE"}`
-	resp, err := http.Post(ts.URL+"/api/chat", "application/json", strings.NewReader(body))
+	resp, err := client.Post(ts.URL+"/api/chat", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /api/chat: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-
-	var out struct {
-		Reply     string           `json:"reply"`
+	var chat struct {
 		Locale    string           `json:"locale"`
 		ToolCalls []agent.ToolCall `json:"tool_calls"`
+		Pending   *struct {
+			ID      string `json:"id"`
+			Actions []struct {
+				Name string `json:"name"`
+			} `json:"actions"`
+		} `json:"pending"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decode: %v", err)
+	if err := json.NewDecoder(resp.Body).Decode(&chat); err != nil {
+		t.Fatalf("decode chat: %v", err)
+	}
+	resp.Body.Close()
+
+	if chat.Locale != "de-DE" {
+		t.Errorf("locale = %q, want de-DE", chat.Locale)
+	}
+	if chat.Pending == nil || len(chat.Pending.Actions) != 1 || chat.Pending.Actions[0].Name != "create_invoice" {
+		t.Fatalf("pending = %+v, want create_invoice awaiting approval", chat.Pending)
+	}
+	if len(chat.ToolCalls) != 0 || draftCount(t, tools) != 0 {
+		t.Fatal("invoice was created before the merchant approved it")
 	}
 
-	if out.Locale != "de-DE" {
-		t.Errorf("locale = %q, want de-DE", out.Locale)
+	// The merchant taps "Ja, bitte".
+	resp, err = client.Post(ts.URL+"/api/confirm", "application/json", strings.NewReader(`{"id":"`+chat.Pending.ID+`"}`))
+	if err != nil {
+		t.Fatalf("POST /api/confirm: %v", err)
 	}
-	if len(out.ToolCalls) != 1 || out.ToolCalls[0].Name != "create_invoice" {
-		t.Fatalf("tool calls = %+v, want one create_invoice", out.ToolCalls)
+	var confirmed struct {
+		ToolCalls []agent.ToolCall `json:"tool_calls"`
 	}
-	if out.ToolCalls[0].IsError {
-		t.Errorf("create_invoice errored: %s", out.ToolCalls[0].Output)
+	if err := json.NewDecoder(resp.Body).Decode(&confirmed); err != nil {
+		t.Fatalf("decode confirm: %v", err)
 	}
-	if !strings.Contains(out.ToolCalls[0].Output, "INV2-") {
-		t.Errorf("expected an invoice id in tool output, got %s", out.ToolCalls[0].Output)
-	}
-	if !strings.Contains(out.Reply, "30,00 EUR") {
-		t.Errorf("reply should confirm amount, got %q", out.Reply)
-	}
+	resp.Body.Close()
 
-	// Verify the invoice really exists in the provider (it was created DRAFT).
-	listRes, err := tools.Invoke(context.Background(), "list_invoices", json.RawMessage(`{"status":"DRAFT"}`))
+	if len(confirmed.ToolCalls) != 1 || confirmed.ToolCalls[0].IsError || !strings.Contains(confirmed.ToolCalls[0].Output, "INV2-") {
+		t.Errorf("approved create_invoice = %+v, want a created invoice", confirmed.ToolCalls)
+	}
+	if n := draftCount(t, tools); n != 1 {
+		t.Errorf("drafts after approval = %d, want 1", n)
+	}
+}
+
+// shim adapts the mock provider to the server's invoice interface, as the
+// wiring in cmd/paysay does for the live provider.
+type shim struct{ p paypal.ToolProvider }
+
+func (s shim) Invoke(ctx context.Context, name string, args json.RawMessage) (string, bool, error) {
+	res, err := s.p.Invoke(ctx, name, args)
+	return res.Text, res.IsError, err
+}
+
+func draftCount(t *testing.T, tools paypal.ToolProvider) int {
+	t.Helper()
+	res, err := tools.Invoke(context.Background(), "list_invoices", json.RawMessage(`{"status":"DRAFT"}`))
 	if err != nil {
 		t.Fatalf("list_invoices: %v", err)
 	}
 	var listed struct {
 		TotalItems int `json:"total_items"`
 	}
-	_ = json.Unmarshal([]byte(listRes.Text), &listed)
-	if listed.TotalItems != 1 {
-		t.Errorf("expected 1 draft invoice persisted, got %d", listed.TotalItems)
-	}
+	_ = json.Unmarshal([]byte(res.Text), &listed)
+	return listed.TotalItems
 }
 
 func TestEndToEndThaiReadQuery(t *testing.T) {
