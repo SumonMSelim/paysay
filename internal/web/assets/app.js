@@ -336,6 +336,7 @@ async function loadLocales() {
 
 function wireEvents() {
   els.localeSelects.forEach((select) => select.addEventListener("change", () => {
+    if (state.busy || select.value === state.locale) return;
     state.locale = select.value;
     els.localeSelects.forEach((s) => (s.value = state.locale));
     try {
@@ -343,6 +344,12 @@ function wireEvents() {
     } catch (_) {}
     if (recognition) recognition.lang = localeInfo().speech_code || state.locale;
     applyStrings();
+
+    if (hasConversation()) {
+      addDivider(state.locale);
+      saveChat();
+    }
+    redrawConversation();
   }));
 
   document.querySelectorAll("[data-view]").forEach((b) =>
@@ -1163,23 +1170,27 @@ function renderCollections() {
 // other money-moving action.
 async function approveCollections() {
   if (state.busy) return;
-  els.collectionsApprove.disabled = true;
+  setBusy(true);
   try {
     const res = await fetch("/api/collections/approve", { method: "POST" });
     if (res.status === 429) throw new Error(t("error.rate"));
     if (!res.ok) throw new Error(t("error.generic"));
     const pending = await res.json();
     if (!pending || !pending.id) return;
+    state.history.push({
+      role: "assistant",
+      text: "",
+      proposed: pending.actions || [],
+      pending_id: pending.id,
+      ui_only: true,
+    });
+    saveChat();
     openAssistant();
-    els.welcome.hidden = true;
-    const li = el("li", "msg msg-assistant");
-    li.appendChild(confirmCard(pending));
-    els.messages.appendChild(li);
-    scrollConversation();
+    redrawConversation();
   } catch (err) {
     setStatus(err instanceof TypeError ? t("error.generic") : err.message || t("error.generic"), true);
   } finally {
-    els.collectionsApprove.disabled = false;
+    setBusy(false);
   }
 }
 
@@ -1291,19 +1302,20 @@ function expectsAnswer(reply) {
 
 async function sendMessage(text) {
   if (state.busy) return;
+  setBusy(true);
   els.welcome.hidden = true;
   els.quickReplies.hidden = true;
   els.message.value = "";
   appendUser(text);
   const typing = appendTyping();
-  setBusy(true);
   setStatus(t("thinking"));
 
   try {
+    const modelHistory = state.history.filter((turn) => (turn.role === "user" || turn.role === "assistant") && !turn.ui_only);
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, locale: state.locale, history: state.history }),
+      body: JSON.stringify({ message: text, locale: state.locale, history: modelHistory }),
     });
     if (res.status === 429) throw new Error(t("error.rate"));
     if (res.status === 503) throw new Error(t("error.unavailable"));
@@ -1316,20 +1328,20 @@ async function sendMessage(text) {
     state.history.push({ role: "user", text });
     // Proposed actions travel back to the model as structured tool calls
     // (with their outcome), never as text it could imitate.
-    state.history.push({
+    const assistantTurn = {
       role: "assistant",
       text: data.reply || "",
       tool_calls: calls,
       proposed: data.pending ? data.pending.actions : [],
-    });
+      pending_id: data.pending ? data.pending.id : undefined,
+    };
+    state.history.push(assistantTurn);
     saveChat();
 
     // Refresh first so invoice cards in the reply show current data.
     if (calls.length) await refreshInvoices();
     typing.remove();
-    const li = appendAssistant(data.reply, calls);
-    if (data.pending) li.appendChild(confirmCard(data.pending));
-    scrollConversation();
+    renderTurn(assistantTurn, true);
     logActivity(calls);
     setStatus("");
     els.quickReplies.hidden = Boolean(data.pending) || !expectsAnswer(data.reply);
@@ -1370,11 +1382,12 @@ async function speak(text, locale) {
   } catch (_) {}
 }
 
-function appendUser(text) {
+function appendUser(text, scroll = true) {
   const li = el("li", "msg msg-user");
   li.appendChild(el("div", "bubble", text));
   els.messages.appendChild(li);
-  scrollConversation();
+  if (scroll) scrollConversation();
+  return li;
 }
 
 function appendTyping() {
@@ -1387,7 +1400,7 @@ function appendTyping() {
   return li;
 }
 
-function appendAssistant(reply, calls) {
+function appendAssistant(reply, calls, scroll = true) {
   const li = el("li", "msg msg-assistant");
   const visible = calls.filter((c) => c.name !== "list_invoices" || c.is_error);
   if (visible.length) {
@@ -1399,7 +1412,15 @@ function appendAssistant(reply, calls) {
   const found = invoicesIn(calls);
   if (found.length) li.appendChild(invoiceList(found));
   els.messages.appendChild(li);
-  scrollConversation();
+  if (scroll) scrollConversation();
+  return li;
+}
+
+function appendDivider(text, scroll = true) {
+  const li = el("li", "msg msg-divider");
+  li.appendChild(el("span", "msg-divider-text", text));
+  els.messages.appendChild(li);
+  if (scroll) scrollConversation();
   return li;
 }
 
@@ -1513,10 +1534,16 @@ async function approve(pending, card) {
     if (!res.ok) throw new Error(t("error.generic"));
     const calls = (await res.json()).tool_calls || [];
 
-    const last = state.history[state.history.length - 1];
-    if (last && last.role === "assistant") {
-      last.tool_calls = [...(last.tool_calls || []), ...calls];
-      last.proposed = [];
+    const targetTurn = state.history.slice().reverse().find((turn) =>
+      turn.role === "assistant" && (turn.pending_id === pending.id || (turn.pending && turn.pending.id === pending.id))
+    ) || state.history.slice().reverse().find((turn) =>
+      turn.role === "assistant" && turn.proposed && turn.proposed.length > 0
+    );
+    if (targetTurn) {
+      targetTurn.tool_calls = [...(targetTurn.tool_calls || []), ...calls];
+      targetTurn.proposed = [];
+      delete targetTurn.pending_id;
+      delete targetTurn.pending;
     }
     saveChat();
 
@@ -1538,9 +1565,16 @@ async function approve(pending, card) {
 
 // decline needs no server call: the unapproved action simply expires.
 function decline(pending, card) {
-  const last = state.history[state.history.length - 1];
-  if (last && last.role === "assistant") {
-    last.declined = true;
+  const targetTurn = state.history.slice().reverse().find((turn) =>
+    turn.role === "assistant" && (turn.pending_id === pending.id || (turn.pending && turn.pending.id === pending.id))
+  ) || state.history.slice().reverse().find((turn) =>
+    turn.role === "assistant" && turn.proposed && turn.proposed.length > 0
+  );
+  if (targetTurn) {
+    targetTurn.declined = true;
+    targetTurn.proposed = [];
+    delete targetTurn.pending_id;
+    delete targetTurn.pending;
     saveChat();
   }
   card.replaceWith(el("div", "confirm-result", t("confirm.cancelled")));
@@ -1557,8 +1591,62 @@ const ACTIVITY_KEY = "paysay.activity";
 const MAX_SAVED_TURNS = 40; // 20 exchanges
 const MAX_SAVED_ACTIVITY = 50;
 
+function hasConversation() {
+  return state.history.some((turn) => turn.role === "user" || turn.role === "assistant");
+}
+
+function dividerText(turn) {
+  const label = t("divider.language") || t("language") || "Language";
+  let name = turn.langName;
+  if (!name && turn.locale) {
+    const loc = state.locales.find((l) => l.tag === turn.locale);
+    if (loc) name = loc.native_name;
+  }
+  if (!name && turn.text) {
+    const parts = turn.text.split(":");
+    name = parts.length > 1 ? parts.slice(1).join(":").trim() : turn.text;
+  }
+  return `${label}: ${name || ""}`;
+}
+
+function addDivider(localeTag) {
+  const info = state.locales.find((l) => l.tag === localeTag) || localeInfo();
+  const nativeName = info.native_name || localeTag;
+  const dividerEntry = {
+    role: "divider",
+    locale: localeTag,
+    langName: nativeName,
+  };
+  const last = state.history[state.history.length - 1];
+  if (last && last.role === "divider") {
+    state.history[state.history.length - 1] = dividerEntry;
+  } else {
+    state.history.push(dividerEntry);
+  }
+}
+
+function trimHistory(history, maxTurns = MAX_SAVED_TURNS) {
+  const isConv = (t) => t.role === "user" || t.role === "assistant";
+  let convCount = history.filter(isConv).length;
+  if (convCount <= maxTurns) {
+    const firstConv = history.findIndex(isConv);
+    return firstConv > 0 ? history.slice(firstConv) : history;
+  }
+  let start = 0;
+  while (convCount > maxTurns && start < history.length) {
+    if (isConv(history[start])) {
+      convCount--;
+    }
+    start++;
+  }
+  while (start < history.length && !isConv(history[start])) {
+    start++;
+  }
+  return history.slice(start);
+}
+
 function saveChat() {
-  state.history = state.history.slice(-MAX_SAVED_TURNS);
+  state.history = trimHistory(state.history);
   try {
     localStorage.setItem(CHAT_KEY, JSON.stringify(state.history));
   } catch (_) {}
@@ -1573,21 +1661,57 @@ function loadSaved(key) {
   }
 }
 
+function renderTurn(turn, scroll = true) {
+  let li;
+  if (turn.role === "divider") {
+    li = appendDivider(dividerText(turn), false);
+  } else if (turn.role === "user") {
+    li = appendUser(turn.text, false);
+  } else if (turn.role === "assistant") {
+    li = appendAssistant(turn.text, turn.tool_calls || [], false);
+    if (turn.declined) {
+      li.appendChild(el("div", "confirm-result", t("confirm.cancelled")));
+    } else {
+      const pendingId = turn.pending_id || (turn.pending && turn.pending.id);
+      const proposed = turn.proposed || (turn.pending && turn.pending.actions) || [];
+      if (proposed.length > 0 && pendingId) {
+        li.appendChild(confirmCard({ id: pendingId, actions: proposed }));
+      }
+    }
+  }
+  if (scroll) scrollConversation();
+  return li;
+}
+
+function renderConversation(scroll = false) {
+  els.messages.innerHTML = "";
+  for (const turn of state.history) {
+    renderTurn(turn, scroll);
+  }
+  els.welcome.hidden = hasConversation();
+}
+
 function restoreConversation() {
   state.history = loadSaved(CHAT_KEY);
-  for (const turn of state.history) {
-    if (turn.role === "user") {
-      appendUser(turn.text);
-      continue;
-    }
-    const li = appendAssistant(turn.text, turn.tool_calls || []);
-    if (turn.declined) li.appendChild(el("div", "confirm-result", t("confirm.cancelled")));
-  }
-  els.welcome.hidden = state.history.length > 0;
+  renderConversation(false);
+  scrollConversation();
 
   const saved = loadSaved(ACTIVITY_KEY);
   for (const entry of saved.slice().reverse()) addActivity(entry.call, new Date(entry.at));
   els.activityEmpty.hidden = els.activity.children.length > 0;
+}
+
+function redrawConversation() {
+  const wasAtBottom = els.conversation.scrollHeight - els.conversation.scrollTop <= els.conversation.clientHeight + 20;
+  const prevScrollTop = els.conversation.scrollTop;
+
+  renderConversation(false);
+
+  if (wasAtBottom) {
+    scrollConversation();
+  } else {
+    els.conversation.scrollTop = prevScrollTop;
+  }
 }
 
 function newConversation() {
@@ -1737,6 +1861,8 @@ function setBusy(busy) {
   els.message.disabled = busy;
   els.mic.disabled = busy || !recognition;
   els.chase.disabled = busy;
+  if (els.collectionsApprove) els.collectionsApprove.disabled = busy;
+  for (const s of els.localeSelects) s.disabled = busy;
 }
 
 init();

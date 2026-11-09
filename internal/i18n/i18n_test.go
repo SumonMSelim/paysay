@@ -119,3 +119,18 @@ func TestGermanInstructionUsesFormalAddressAndDraftWording(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemPromptAssistantName(t *testing.T) {
+	p := SystemPrompt("PaySay", MustGet("en-US"))
+	for _, want := range []string{
+		"PaySay Assistant",
+		"PaySay Assistent",
+		"ผู้ช่วย PaySay",
+		"introducing yourself",
+		"Do not start every reply with your name",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+}
