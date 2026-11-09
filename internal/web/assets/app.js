@@ -82,6 +82,8 @@ const els = {
   qrAmount: $("qr-amount"),
   qrId: $("qr-id"),
   qrLink: $("qr-link"),
+  demoBanner: $("demo-banner"),
+  demoBannerClose: $("demo-banner-close"),
 };
 
 let recentGrid = null;
@@ -304,6 +306,16 @@ async function loadConfig() {
       loadBryntum();
     }
     els.modeBadge.classList.add(state.liveMode ? "live" : "demo");
+
+    if (state.liveMode && els.demoBanner) {
+      let dismissed = false;
+      try {
+        dismissed = localStorage.getItem("paysay.demo_notice_dismissed") === "1";
+      } catch (_) {}
+      if (!dismissed) {
+        els.demoBanner.hidden = false;
+      }
+    }
   } catch (_) {
     setStatus(t("error.generic"), true);
   }
@@ -368,6 +380,12 @@ function wireEvents() {
   els.refresh.addEventListener("click", refreshInvoices);
   els.chase.addEventListener("click", () => ask(t("prompt.chase")));
   els.collectionsApprove.addEventListener("click", approveCollections);
+  els.demoBannerClose?.addEventListener("click", () => {
+    if (els.demoBanner) els.demoBanner.hidden = true;
+    try {
+      localStorage.setItem("paysay.demo_notice_dismissed", "1");
+    } catch (_) {}
+  });
 
   els.quickFilter.addEventListener("input", () =>
     invoiceGrid && invoiceGrid.setGridOption("quickFilterText", els.quickFilter.value),
@@ -1206,7 +1224,8 @@ function shortDateTime(iso) {
 async function showInvoiceQR(inv) {
   els.qrId.textContent = inv.id;
   els.qrAmount.textContent = money(inv.amount, inv.currency) || "–";
-  els.qrLink.href = `https://www.sandbox.paypal.com/invoice/p/#${encodeURIComponent(inv.id)}`;
+  els.qrLink.href = "#";
+  els.qrLink.hidden = true;
   els.qrImage.textContent = t("qr.loading");
   els.qrModal.showModal();
 
@@ -1214,7 +1233,10 @@ async function showInvoiceQR(inv) {
     const res = await fetch(`/api/invoices/${encodeURIComponent(inv.id)}/qr`);
     if (!res.ok) throw new Error("qr");
     const data = await res.json();
-    if (data.payment_url) els.qrLink.href = data.payment_url;
+    if (data.payment_url) {
+      els.qrLink.href = data.payment_url;
+      els.qrLink.hidden = false;
+    }
     let src = "";
     if (data.image) src = data.image.startsWith("data:") ? data.image : `data:image/png;base64,${data.image}`;
     else if (data.qr_image_url) src = data.qr_image_url;
@@ -1317,9 +1339,29 @@ async function sendMessage(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text, locale: state.locale, history: modelHistory }),
     });
-    if (res.status === 429) throw new Error(t("error.rate"));
-    if (res.status === 503) throw new Error(t("error.unavailable"));
-    if (!res.ok) throw new Error(t("error.generic"));
+    if (!res.ok) {
+      let code = "";
+      try {
+        const errData = await res.json();
+        code = errData?.code || "";
+      } catch (_) {}
+      if (code === "assistant_busy" || (!code && res.status === 429)) {
+        throw new Error(t("error.assistant_busy"));
+      }
+      if (code === "paypal_connecting") {
+        throw new Error(t("error.paypal_connecting"));
+      }
+      if (code === "assistant_timeout" || res.status === 504) {
+        throw new Error(t("error.assistant_timeout"));
+      }
+      if (code === "assistant_error" || res.status === 502) {
+        throw new Error(t("error.assistant_error"));
+      }
+      if (code === "assistant_unavailable" || res.status === 503) {
+        throw new Error(t("error.unavailable"));
+      }
+      throw new Error(t("error.generic"));
+    }
     const data = await res.json();
     const calls = data.tool_calls || [];
 

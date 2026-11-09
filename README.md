@@ -87,6 +87,14 @@ Browser (Web Speech API)                Go backend
   falls back to text.
 - **PayPal tokens** are minted from the sandbox client ID and secret and
   refreshed before they expire, restarting the MCP server with the new token.
+- **Non-blocking startup:** `/healthz` is up at once. In live mode, PayPal connects
+  in the background with capped backoff, and PayPal routes (`/api/invoices`, `/qr`,
+  `/api/confirm`) return 503 `paypal_connecting` until ready; `/api/config` exposes
+  `paypal_ready`.
+- **Error taxonomy:** Model and agent failures return explicit API error codes:
+  429 `assistant_busy` (model throttled), 503 `assistant_unavailable` (model or
+  credentials unreachable), 502 `assistant_error` (request or model failure), and
+  504 `assistant_timeout` (agent turn exceeded 90s deadline).
 
 Without PayPal credentials, PaySay runs in **demo mode** with an in-memory
 simulated PayPal provider, clearly badged in the sidebar.
@@ -103,7 +111,7 @@ simulated PayPal provider, clearly badged in the sidebar.
 | Invoice table | AG Grid Community v33, self-hosted |
 | Timeline | Bryntum Scheduler v7.3.8 (commercial trial, fetched at build time) |
 | Languages | English, German, Thai |
-| Frontend | Vanilla JS/HTML/CSS embedded in the Go binary, no build step |
+| Frontend | Vanilla JS/HTML/CSS embedded in the Go binary with ETag and Cache-Control caching |
 | Packaging | Docker multi-stage (Go + Node for the MCP server), Docker Compose |
 
 > Bryntum Scheduler is fetched at Docker build time under its commercial trial
@@ -134,6 +142,7 @@ Compose for you (run `make login` first if the session expired).
 
 ```bash
 make run-docker   # Docker Compose with SSO credentials from AWS_PROFILE
+make run          # Run locally on the host, listening on :8080 (reads env via your shell)
 make test         # unit, integration and end-to-end tests (no network needed)
 make test-race    # the same with the race detector
 make vet          # static analysis
@@ -148,18 +157,28 @@ All configuration is via environment variables (see `.env.example`).
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `AWS_REGION` | `us-east-1` | Region for Bedrock and Polly |
-| `BEDROCK_MODEL_ID` | `us.amazon.nova-pro-v1:0` | Agent model |
 | `BEDROCK_MAX_TOKENS` | `2048` | Max output tokens per turn |
+| `BEDROCK_MODEL_ID` | `us.amazon.nova-pro-v1:0` | Agent model |
+| `BEDROCK_TEMPERATURE` | *(unset)* | Optional sampling temperature (lower is more deterministic) |
+| `COLLECTIONS_TOKEN` | *(empty)* | Shared secret for daily collections endpoint; empty = disabled (404). At least 16 chars when set |
 | `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` | *(empty)* | Sandbox app credentials; empty = demo mode |
 | `PAYPAL_ENVIRONMENT` | `SANDBOX` | `SANDBOX` or `PRODUCTION` |
+| `PAYPAL_MCP_COMMAND` | `npx` | Command to launch the PayPal MCP server |
 | `PAYPAL_MERCHANT_EMAIL` | *(empty)* | Sandbox business email used as the seller |
 | `PAYPAL_MERCHANT_NAME` | *(empty)* | Business name on invoices; empty = PayPal account profile |
-| `PAYSAY_SUPPORTED_LOCALES` | `en-US,de-DE,th-TH` | Enabled languages |
-| `VOICE_TTS_ENABLED` | `true` | Spoken replies via Polly |
+| `PAYSAY_BRAND_NAME` | `PaySay` | Display product name |
+| `PAYSAY_BRAND_TAGLINE` | `Run your business by voice.` | Display brand tagline |
+| `PAYSAY_DEFAULT_LOCALE` | `en-US` | Default language and formatting locale |
+| `PAYSAY_SUPPORTED_LOCALES` | `en-US,de-DE,th-TH` | Enabled languages (comma-separated) |
 | `RATE_LIMIT_PER_MINUTE` | `10` | Chat and speech requests per visitor per minute (0 = off) |
-| `RATE_LIMIT_PER_HOUR` | `300` | Chat and speech requests across all visitors per hour (0 = off) |
+| `RATE_LIMIT_PER_HOUR` | `300` | Global requests per hour across all visitors, shared with invoice routes (0 = off) |
 | `SERVER_ADDR` | `:8080` | Listen address inside the container |
-| `COLLECTIONS_TOKEN` | *(empty)* | Shared secret for the daily collections endpoint; empty = endpoint disabled (404). At least 16 characters when set |
+| `SERVER_ALLOWED_ORIGINS` | `*` | Allowed CORS origins and Origin check allow-list (comma-separated) |
+| `SERVER_READ_TIMEOUT` | `30s` | Maximum duration for reading the entire request |
+| `SERVER_SHUTDOWN_TIMEOUT` | `15s` | Grace period for active connections during graceful shutdown |
+| `SERVER_WRITE_TIMEOUT` | `120s` | Response write timeout (must exceed 90s chat turn deadline) |
+| `VOICE_SAMPLE_RATE_HZ` | `16000` | Audio sample rate for synthesized speech in Hz |
+| `VOICE_TTS_ENABLED` | `true` | Spoken replies via Amazon Polly |
 
 > Some Bedrock models need an inference profile ID rather than a base model
 > ID. If you get `on-demand throughput isn't supported`, run
@@ -175,6 +194,11 @@ All configuration is via environment variables (see `.env.example`).
 The sidebar then shows **PayPal sandbox · live**. PayPal's sandbox does not
 deliver real emails; sent invoices appear under the sandbox account's
 notifications on developer.paypal.com.
+
+> **Public demo notice:** The hosted demo at <https://paysay.onrender.com> runs in
+> live PayPal sandbox mode with a shared merchant account. Sandbox never emails
+> anyone, so please don't enter real email addresses. Per-session state separates
+> each visitor's created invoices via "Created by me".
 
 ## Daily collections check
 
@@ -197,7 +221,8 @@ Each run:
 
 The job never sends reminders itself. Approval goes through the same
 confirmation gate as every other money-moving action: the Approve button reuses
-the existing confirmation card and `POST /api/confirm`.
+the existing confirmation card and `POST /api/confirm`. HTTP requests to PaySay
+(`fetchInvoices` and `postPlan`) are bounded by 30-second timeouts.
 
 If Transaction Search is unavailable (for example a 403 because the feature is
 not enabled on the PayPal app), the job still posts a plan with no skips and
@@ -251,16 +276,29 @@ test/e2e              end-to-end flow: chat, approval, invoice created
 ## Security
 
 - Money-moving actions need an explicit approval tied to the visitor's session
-  (single use, 10-minute expiry); the model cannot run them itself.
+  (single use, 10-minute expiry); the model cannot run them itself. A server-side
+  allow-list prevents unapproved tool execution on confirm.
 - Tool arguments from the model are untrusted: tools are checked against an
   allow-list, and seller details are replaced with configured values.
-- Per-visitor and global rate limits cap AWS spend on a public deployment.
+- Rate limits protect downstream APIs: chat and speech are capped at 10 req/min
+  per visitor, invoice list and QR routes at 30 req/min per visitor, and all
+  routes share a single 300 req/h global window. A 5s cache bounds invoice list reads.
+- State-changing POSTs (`/api/chat`, `/api/confirm`, `/api/speak`, `/api/collections/approve`)
+  enforce an Origin check against `SERVER_ALLOWED_ORIGINS` (or same-host under wildcard),
+  rejecting untrusted cross-origin requests with 403.
+- Security headers on all responses include CSP, `X-Content-Type-Options`, `X-Frame-Options: DENY`,
+  and `Permissions-Policy: microphone=(self), camera=(), geolocation=()`.
+  `Strict-Transport-Security` (HSTS) is set on HTTPS/TLS requests.
+- Static assets are cached via content-hash ETags (304 revalidation) and
+  `Cache-Control: public, max-age=604800` for vendor bundles (`no-cache` elsewhere).
 - Credentials come from the environment and are never logged; request bodies,
   which may contain customer details, are never logged.
-- CSP, `X-Content-Type-Options`, `X-Frame-Options`, a body size limit, a CORS
-  allow-list and panic recovery apply to every request. The container runs as
-  a non-root user.
-- Conversation history stays in the visitor's browser; the server keeps none.
+- Bounded timeouts protect server resources: 90s chat turn deadline, 60s confirm
+  deadline, 120s server write timeout, and 30s job request timeouts.
+- No conversation transcript is stored on the server; only short-lived,
+  in-memory per-session state is kept (pending approvals with a 10-minute expiry,
+  the IDs of invoices a session created, collections claims), plus a session cookie;
+  all of it is lost on restart.
 
 ## License
 
