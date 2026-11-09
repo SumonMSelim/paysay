@@ -68,12 +68,20 @@ func (r *RefreshingProvider) Invoke(ctx context.Context, name string, args json.
 	if err != nil {
 		return ToolResult{}, err
 	}
-	res, err := p.Invoke(ctx, name, args)
-	r.mu.RUnlock()
+	res, err := r.invokeAndRelease(ctx, p, name, args)
 	if errors.Is(err, mcp.ErrTransportClosed) {
 		r.markStale(p)
 	}
 	return res, err
+}
+
+// invokeAndRelease runs one tool call and releases the read lock with a defer,
+// so a panic in the underlying provider cannot leave the lock held forever
+// (which would deadlock every later call). acquire took the read lock; this
+// function owns releasing it.
+func (r *RefreshingProvider) invokeAndRelease(ctx context.Context, p ToolProvider, name string, args json.RawMessage) (ToolResult, error) {
+	defer r.mu.RUnlock()
+	return p.Invoke(ctx, name, args)
 }
 
 // markStale forces a relaunch on the next call when the MCP server process

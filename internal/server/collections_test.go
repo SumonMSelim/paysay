@@ -34,7 +34,7 @@ func collectionsServerSrv(t *testing.T, token string) (*Server, *recordingInvoke
 	}
 	cfg.CollectionsToken = token
 	inv := &recordingInvoker{}
-	return New(Options{Config: cfg, Agent: &stubAgent{}, Invoices: inv}), inv
+	return New(Options{Config: cfg, Agent: &stubAgent{}, Invoices: inv, ApprovalTools: []string{"send_invoice", "send_invoice_reminder", "create_invoice"}}), inv
 }
 
 // samplePlan is a minimal valid plan body with one invoice to chase and one

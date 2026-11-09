@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -37,14 +38,23 @@ func TestFetchAccessTokenSuccess(t *testing.T) {
 }
 
 func TestFetchAccessTokenUnauthorized(t *testing.T) {
+	const secretBody = `{"error":"invalid_client","error_description":"leak-me"}`
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
+		_, _ = w.Write([]byte(secretBody))
 	}))
 	defer ts.Close()
 
 	_, err := fetchTokenFromURL(context.Background(), ts.URL, "bad_client", "bad_secret", ts.Client())
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+	// The response body may echo the credentials or other sensitive detail, so
+	// it must never appear in the error message; only the status should.
+	if strings.Contains(err.Error(), "leak-me") || strings.Contains(err.Error(), "invalid_client") {
+		t.Errorf("error leaked the response body: %v", err)
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error should include the HTTP status: %v", err)
 	}
 }

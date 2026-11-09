@@ -98,19 +98,20 @@ func TestRespondFinalTextNoTools(t *testing.T) {
 func TestRespondExecutesToolThenAnswers(t *testing.T) {
 	mock := paypal.NewMockProvider("shop@example.com")
 	conv := &scriptedConverser{responses: []*bedrockruntime.ConverseOutput{
-		// First: model asks to create an invoice.
-		toolUseResponse("tu-1", "create_invoice", map[string]any{
-			"recipient_email": "kunde@example.com",
-			"currency_code":   "EUR",
-			"total":           "30.00",
+		// First: the model asks to list invoices. list_invoices is a read-only
+		// tool that is never approval-gated, so the agent runs it directly.
+		// (create_invoice is deliberately not used here: it is approval-gated
+		// in production and must not appear to run ungated.)
+		toolUseResponse("tu-1", "list_invoices", map[string]any{
+			"status": "SENT",
 		}),
-		// Second: model produces a final confirmation.
-		textResponse("Die Rechnung über 30,00 EUR wurde erstellt."),
+		// Second: the model produces a final answer from the tool result.
+		textResponse("Du hast derzeit keine offenen Rechnungen."),
 	}}
 	ag := newTestAgent(conv, mock)
 
 	res, err := ag.Respond(context.Background(), nil,
-		"Erstelle eine Rechnung über 30 Euro für kunde@example.com", i18n.MustGet("de-DE"))
+		"Zeig mir meine gesendeten Rechnungen", i18n.MustGet("de-DE"))
 	if err != nil {
 		t.Fatalf("Respond: %v", err)
 	}
@@ -118,25 +119,25 @@ func TestRespondExecutesToolThenAnswers(t *testing.T) {
 		t.Fatalf("expected 1 tool call, got %d", len(res.ToolCalls))
 	}
 	tc := res.ToolCalls[0]
-	if tc.Name != "create_invoice" {
-		t.Errorf("tool name = %q, want create_invoice", tc.Name)
+	if tc.Name != "list_invoices" {
+		t.Errorf("tool name = %q, want list_invoices", tc.Name)
 	}
 	if tc.IsError {
 		t.Errorf("unexpected tool error: %s", tc.Output)
 	}
-	// The mock returns JSON with an invoice ID; confirm it round-tripped.
-	if !strings.Contains(tc.Output, "INV2-") {
-		t.Errorf("tool output missing invoice id: %s", tc.Output)
+	// The mock returns the invoice-list envelope; confirm it round-tripped.
+	if !strings.Contains(tc.Output, "total_items") {
+		t.Errorf("tool output missing invoice list: %s", tc.Output)
 	}
 	// Confirm the model's tool input was forwarded correctly.
 	var input map[string]any
 	if err := json.Unmarshal(tc.Input, &input); err != nil {
 		t.Fatalf("tool input not valid JSON: %v", err)
 	}
-	if input["currency_code"] != "EUR" {
-		t.Errorf("forwarded currency = %v, want EUR", input["currency_code"])
+	if input["status"] != "SENT" {
+		t.Errorf("forwarded status = %v, want SENT", input["status"])
 	}
-	if res.Reply != "Die Rechnung über 30,00 EUR wurde erstellt." {
+	if res.Reply != "Du hast derzeit keine offenen Rechnungen." {
 		t.Errorf("final reply = %q", res.Reply)
 	}
 	if conv.calls != 2 {

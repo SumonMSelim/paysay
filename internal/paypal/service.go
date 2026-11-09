@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/SumonMSelim/paysay/internal/paypal/mcp"
 )
@@ -143,12 +144,21 @@ func NewService(ctx context.Context, lc LaunchConfig, opts ...Option) (*Service,
 	// due date, which the MCP create_invoice tool cannot set.
 	s.invoicing = newInvoicingClient(apiBaseURL(lc.Environment), lc.AccessToken, nil)
 
-	if _, err := client.Initialize(ctx); err != nil {
+	// Bound the MCP handshake so a server that launches but never responds to
+	// initialize cannot block startup forever. The launch context remains the
+	// long-lived parent for the subprocess; only the handshake is time-boxed.
+	initCtx, cancel := context.WithTimeout(ctx, mcpInitializeTimeout)
+	defer cancel()
+	if _, err := client.Initialize(initCtx); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("paypal: initialize MCP: %w", err)
 	}
 	return s, nil
 }
+
+// mcpInitializeTimeout bounds the MCP initialize handshake so a hung server
+// cannot block startup indefinitely.
+const mcpInitializeTimeout = 30 * time.Second
 
 // newServiceWithClient builds a Service around an existing client (used in
 // tests). It does not perform Initialize.

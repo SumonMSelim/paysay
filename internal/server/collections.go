@@ -199,6 +199,15 @@ func (s *collectionsStore) pruneExpiredLocked(now time.Time) {
 	}
 }
 
+// sweepExpired drops expired claims. It is driven by the periodic sweeper so
+// claims from declined or abandoned approval cards are released even when no
+// further approve call touches the store.
+func (s *collectionsStore) sweepExpired(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneExpiredLocked(now)
+}
+
 // sessionBatchLocked returns the pending ID and invoice IDs of the session's
 // current live claim batch, or an empty ID when it has none. Caller holds the
 // lock and has already pruned expired claims. A session only ever has one live

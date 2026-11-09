@@ -53,8 +53,10 @@ USER paysay
 EXPOSE 8080
 ENV SERVER_ADDR=:8080
 
-# Simple healthcheck against the liveness endpoint.
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+# Simple healthcheck against the liveness endpoint. The start period is 60s so
+# the first check is not counted until the process has had time to boot; the
+# server itself serves /healthz immediately and does not wait on PayPal.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
 
 ENTRYPOINT ["/app/paysay"]

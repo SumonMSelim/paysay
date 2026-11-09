@@ -1,13 +1,27 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 	"unicode/utf8"
 
 	"github.com/SumonMSelim/paysay/internal/agent"
 	"github.com/SumonMSelim/paysay/internal/i18n"
+)
+
+// Bounds on how long a single state-changing request may run. An agent turn
+// makes several model + tool round-trips, so it gets a generous deadline; a
+// confirmed PayPal action is a small, fixed set of calls that must never be cut
+// off half-way, so it gets its own bounded context rather than inheriting the
+// chat deadline. Both are shorter than the server's WriteTimeout so the error
+// response can still be written. They are vars (not consts) only so tests can
+// shrink them.
+var (
+	chatTurnTimeout = 90 * time.Second
+	confirmTimeout  = 60 * time.Second
 )
 
 // writeJSON encodes v as JSON with the given status code.
@@ -45,6 +59,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 		"tagline":        s.cfg.Brand.Tagline,
 		"default_locale": s.cfg.DefaultLocale,
 		"live_mode":      s.liveMode,
+		"paypal_ready":   s.gate.isReady(),
 		"tts_enabled":    s.cfg.Voice.TTSEnabled,
 		"has_bryntum":    hasBryntum,
 	})
@@ -141,17 +156,40 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	locale, _ := i18n.Get(tag)
 	session := sessionID(w, r)
 
-	res, err := s.agent.Respond(r.Context(), req.History, req.Message, locale)
+	// An agent turn can run several model + tool round-trips and may outlast
+	// the HTTP WriteTimeout, so give it its own bounded deadline. On timeout the
+	// switch below maps context.DeadlineExceeded to 504 assistant_timeout. The
+	// server's WriteTimeout is configured to be longer than this (see
+	// config.go defaults) so the 504 can actually be written.
+	ctx, cancel := context.WithTimeout(r.Context(), chatTurnTimeout)
+	defer cancel()
+
+	res, err := s.agent.Respond(ctx, req.History, req.Message, locale)
 	if err != nil {
 		s.log.Error("agent respond failed", "error", err, "locale", tag)
-		if errors.Is(err, agent.ErrModelUnavailable) {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+			writeJSON(w, http.StatusGatewayTimeout, map[string]string{
+				"error": "the assistant took too long to respond, please try again",
+				"code":  "assistant_timeout",
+			})
+		case errors.Is(err, agent.ErrModelBusy):
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{
+				"error": "the assistant is busy right now, please try again in a moment",
+				"code":  "assistant_busy",
+			})
+		case errors.Is(err, agent.ErrModelUnavailable):
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 				"error": "the assistant is unavailable right now",
 				"code":  "assistant_unavailable",
 			})
-			return
+		default:
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "the assistant could not complete the request",
+				"code":  "assistant_error",
+			})
 		}
-		writeError(w, http.StatusBadGateway, "the assistant could not complete the request")
 		return
 	}
 	s.sessions.recordCreated(session, res.ToolCalls)
@@ -191,14 +229,35 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "this action expired or was already handled; please ask again")
 		return
 	}
-	if s.invoices == nil {
+	invoices, ready := s.gate.lister()
+	if !ready {
+		writePayPalConnecting(w)
+		return
+	}
+	if invoices == nil {
 		writeError(w, http.StatusServiceUnavailable, "PayPal is not available")
 		return
 	}
 
+	// A confirmed action must not be cut off half-way, so it runs on its own
+	// bounded context derived from the background context rather than the
+	// request context (which the browser could cancel). confirmTimeout bounds
+	// the whole approved batch.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), confirmTimeout)
+	defer cancel()
+
 	// Run each approved call; one failing does not stop the others.
 	for i := range calls {
-		res, err := s.invoices.Invoke(r.Context(), calls[i].Name, calls[i].Input)
+		// Defence in depth: only ever run tools on the approval allow-list,
+		// even though pending only holds agent-gated calls. A name outside the
+		// list is refused without contacting PayPal.
+		if !s.approvalTools[calls[i].Name] {
+			s.log.Error("confirm refused non-approval tool", "tool", calls[i].Name)
+			calls[i].Output = `{"error":"this action is not permitted"}`
+			calls[i].IsError = true
+			continue
+		}
+		res, err := invoices.Invoke(ctx, calls[i].Name, calls[i].Input)
 		if err != nil {
 			s.log.Error("approved action failed", "tool", calls[i].Name, "error", err)
 			calls[i].Output = `{"error":"PayPal could not complete this action"}`
@@ -207,6 +266,11 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		}
 		calls[i].Output = res.Text
 		calls[i].IsError = res.IsError
+		if !calls[i].IsError {
+			// A successful send or remind changes invoice state, so drop the
+			// cached list; the next read reflects it.
+			s.invoiceCache.invalidate()
+		}
 		// Record a successful reminder so the collections card and the approve
 		// endpoint do not offer to remind the same invoice twice.
 		if calls[i].Name == "send_invoice_reminder" && !calls[i].IsError {

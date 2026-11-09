@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { PaypalClient } from "paypal";
 import type { JobConfig } from "../src/config.js";
-import { selectChaseCandidates, type InvoiceRow } from "../src/invoices.js";
+import { selectChaseCandidates, fetchInvoices, type InvoiceRow } from "../src/invoices.js";
 import { findPaidInvoiceIds } from "../src/reconcile.js";
 import { buildPlan, postPlan, type CollectionsPlan } from "../src/plan.js";
 import { runCollectionsCheck } from "../src/collections.js";
@@ -276,5 +276,45 @@ describe("runCollectionsCheck", () => {
     expect(plan.chase.map((i) => i.id)).toEqual(["INV2-CHASE-1"]);
     expect(plan.skipped).toHaveLength(0);
     expect(posted?.chase).toHaveLength(1);
+  });
+});
+
+describe("app request timeouts", () => {
+  // The real timeout is 30s; the unit tests assert the wiring (an AbortSignal
+  // is passed) and that an abort propagates as a rejection, without waiting for
+  // the full duration. A fetch stub that rejects as soon as the signal aborts,
+  // combined with a short manual abort, exercises the same code path.
+  function abortableFetch(): { impl: typeof fetch; sawSignal: () => boolean; abort: () => void } {
+    const controller = new AbortController();
+    let sawSignal = false;
+    const impl: typeof fetch = async (_input, init) => {
+      sawSignal = init?.signal instanceof AbortSignal;
+      return await new Promise<Response>((_resolve, reject) => {
+        // Reject when either the request's own timeout signal or our manual
+        // controller aborts.
+        init?.signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+        controller.signal.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+      });
+    };
+    return { impl, sawSignal: () => sawSignal, abort: () => controller.abort() };
+  }
+
+  it("fetchInvoices passes an abort signal and rejects when it aborts", async () => {
+    const f = abortableFetch();
+    const p = fetchInvoices(cfg, f.impl);
+    const assertion = expect(p).rejects.toThrow(/abort/i);
+    f.abort();
+    await assertion;
+    expect(f.sawSignal()).toBe(true);
+  });
+
+  it("postPlan passes an abort signal and rejects when it aborts", async () => {
+    const f = abortableFetch();
+    const plan: CollectionsPlan = { generated_at: NOW.toISOString(), chase: [], skipped: [] };
+    const p = postPlan(cfg, plan, f.impl);
+    const assertion = expect(p).rejects.toThrow(/abort/i);
+    f.abort();
+    await assertion;
+    expect(f.sawSignal()).toBe(true);
   });
 });

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/SumonMSelim/paysay/internal/agent"
 	"github.com/SumonMSelim/paysay/internal/bedrock"
@@ -48,11 +49,11 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// PayPal tools: live MCP when credentials exist, otherwise mock.
-	tools, liveMode, err := buildToolProvider(ctx, cfg, logger)
-	if err != nil {
-		return err
-	}
+	// PayPal tools: live MCP when credentials exist, otherwise an in-memory
+	// mock. In live mode this returns immediately with a not-yet-connected
+	// deferred provider and a connect function; the real token mint, MCP launch
+	// and handshake run in the background so the HTTP server starts at once.
+	tools, liveMode, connecting, connect := buildToolProvider(ctx, cfg, logger)
 	defer func() {
 		if cerr := tools.Close(); cerr != nil {
 			logger.Warn("closing tool provider", "error", cerr)
@@ -72,14 +73,24 @@ func run(logger *slog.Logger) error {
 	synth := buildSynthesizer(ctx, cfg, logger)
 
 	srv := server.New(server.Options{
-		Config:      cfg,
-		Agent:       ag,
-		Synthesizer: synth,
-		Logger:      logger,
-		WebFS:       web.FS(),
-		LiveMode:    liveMode,
-		Invoices:    server.NewInvoiceListerAdapter(invoiceShim{tools}),
+		Config:           cfg,
+		Agent:            ag,
+		Synthesizer:      synth,
+		Logger:           logger,
+		WebFS:            web.FS(),
+		WebHandler:       web.Handler(),
+		LiveMode:         liveMode,
+		Invoices:         server.NewInvoiceListerAdapter(invoiceShim{tools}),
+		PayPalConnecting: connecting,
+		ApprovalTools:    paypal.ApprovalTools,
 	})
+
+	// Connect PayPal in the background (live mode only) so startup is not
+	// blocked on it. On success the server's readiness gate flips and
+	// PayPal-backed routes stop returning 503 paypal_connecting.
+	if connect != nil {
+		go connect(ctx, srv)
+	}
 
 	logger.Info("starting paysay",
 		"brand", cfg.Brand.Name,
@@ -92,15 +103,26 @@ func run(logger *slog.Logger) error {
 	return srv.Run(ctx)
 }
 
-// buildToolProvider returns a live MCP-backed PayPal provider when client
-// credentials are configured, otherwise a mock provider. The boolean reports live mode.
-func buildToolProvider(ctx context.Context, cfg *config.Config, logger *slog.Logger) (paypal.ToolProvider, bool, error) {
+// buildToolProvider returns the PayPal tool provider. With no client
+// credentials it returns an in-memory mock, already connected. With credentials
+// it returns a not-yet-connected DeferredProvider plus a connect function that
+// mints a token, launches the MCP server and performs the handshake in the
+// background with capped-backoff retries; when connect succeeds it attaches the
+// live provider to the deferred one and flips the server's readiness gate.
+//
+// Return values: the provider to wire into the agent and server, whether this
+// is live mode, whether PayPal is still connecting (true only in live mode),
+// and the connect function (nil when there is nothing to connect).
+func buildToolProvider(ctx context.Context, cfg *config.Config, logger *slog.Logger) (paypal.ToolProvider, bool, bool, func(context.Context, *server.Server)) {
 	if err := cfg.RequireLiveCredentials(); err != nil {
 		if errors.Is(err, config.ErrMissingPayPalCredentials) {
 			logger.Warn("PayPal client credentials not set: running with in-memory mock PayPal provider (no real invoices will be created)")
-			return paypal.NewMockProvider(cfg.PayPal.MerchantEmail), false, nil
+			return paypal.NewMockProvider(cfg.PayPal.MerchantEmail), false, false, nil
 		}
-		return nil, false, err
+		// Any other credential problem: keep serving with a deferred provider
+		// that reports paypal_connecting, rather than refusing to boot.
+		logger.Error("PayPal credential check failed; serving without PayPal", "error", err)
+		return paypal.NewDeferredProvider(), true, true, nil
 	}
 
 	opts := []paypal.Option{paypal.WithAllowedTools(paypal.InvoiceTools...)}
@@ -127,12 +149,55 @@ func buildToolProvider(ctx context.Context, cfg *config.Config, logger *slog.Log
 	mint := func(ctx context.Context) (*paypal.TokenResponse, error) {
 		return paypal.FetchToken(ctx, cfg.PayPal.ClientID, cfg.PayPal.ClientSecret, cfg.PayPal.Environment)
 	}
-	svc, err := paypal.NewRefreshingProvider(ctx, mint, launch)
-	if err != nil {
-		return nil, false, err
+
+	deferred := paypal.NewDeferredProvider()
+	connect := func(ctx context.Context, srv *server.Server) {
+		connectPayPal(ctx, deferred, srv, mint, launch, cfg.PayPal.Environment, logger)
 	}
-	logger.Info("connected to PayPal MCP server", "environment", cfg.PayPal.Environment)
-	return svc, true, nil
+	return deferred, true, true, connect
+}
+
+// paypalConnectMaxBackoff caps the retry backoff for the background PayPal
+// connect so a long outage keeps retrying at a steady, bounded interval.
+const paypalConnectMaxBackoff = 60 * time.Second
+
+// connectPayPal connects the live PayPal provider in the background, retrying
+// with exponential backoff capped at paypalConnectMaxBackoff. On success it
+// attaches the provider to the deferred wrapper (so the agent's tools work) and
+// flips the server's readiness gate (so PayPal-backed routes stop returning
+// 503). Invalid credentials never crash the process: the error is logged and
+// the loop keeps retrying, so a later credential fix recovers without a
+// restart. It returns when ctx is cancelled (shutdown).
+func connectPayPal(
+	ctx context.Context,
+	deferred *paypal.DeferredProvider,
+	srv *server.Server,
+	mint func(ctx context.Context) (*paypal.TokenResponse, error),
+	launch func(accessToken string) (paypal.ToolProvider, error),
+	environment string,
+	logger *slog.Logger,
+) {
+	backoff := time.Second
+	for {
+		provider, err := paypal.NewRefreshingProvider(ctx, mint, launch)
+		if err == nil {
+			deferred.Set(provider)
+			srv.SetInvoices(server.NewInvoiceListerAdapter(invoiceShim{provider}))
+			logger.Info("connected to PayPal MCP server", "environment", environment)
+			return
+		}
+		logger.Error("PayPal connect failed; will retry", "error", err, "retry_in", backoff.String())
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > paypalConnectMaxBackoff {
+			backoff = paypalConnectMaxBackoff
+		}
+	}
 }
 
 // buildSynthesizer returns a Polly synthesizer when TTS is enabled, otherwise a

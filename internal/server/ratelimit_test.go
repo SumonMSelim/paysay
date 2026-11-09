@@ -54,16 +54,25 @@ func TestRateLimiterZeroDisables(t *testing.T) {
 
 func TestClientKey(t *testing.T) {
 	cases := []struct {
-		name, xff, remote, want string
+		name, cf, xff, remote, want string
 	}{
-		{"forwarded", "203.0.113.7, 10.0.0.1", "10.0.0.2:5000", "203.0.113.7"},
-		{"direct", "", "198.51.100.4:5000", "198.51.100.4"},
-		{"blank forwarded", " ", "198.51.100.4:5000", "198.51.100.4"},
+		// CF-Connecting-IP wins over everything: it is set by Cloudflare's edge
+		// and a browser cannot forge it.
+		{"cf-connecting-ip", "198.51.100.9", "203.0.113.7, 10.0.0.1", "10.0.0.2:5000", "198.51.100.9"},
+		// Without it, the rightmost X-Forwarded-For hop (added by the nearest
+		// trusted proxy) is used, not the spoofable leftmost client entry.
+		{"forwarded rightmost", "", "203.0.113.7, 10.0.0.1", "10.0.0.2:5000", "10.0.0.1"},
+		{"single forwarded", "", "203.0.113.7", "10.0.0.2:5000", "203.0.113.7"},
+		{"direct", "", "", "198.51.100.4:5000", "198.51.100.4"},
+		{"blank forwarded", "", " ", "198.51.100.4:5000", "198.51.100.4"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
 			r.RemoteAddr = c.remote
+			if c.cf != "" {
+				r.Header.Set("CF-Connecting-IP", c.cf)
+			}
 			if c.xff != "" {
 				r.Header.Set("X-Forwarded-For", c.xff)
 			}

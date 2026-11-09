@@ -20,11 +20,19 @@ const sessionCookie = "paysay_session"
 // output, which works for both the mock and the live MCP response shapes.
 var invoiceIDPattern = regexp.MustCompile(`INV2-[A-Z0-9-]+`)
 
+// maxTrackedSessions caps how many sessions sessionInvoices remembers. A public
+// demo accumulates a new session per visitor, so without a cap the map grows
+// without bound; past the cap the oldest-inserted session is evicted (it only
+// loses the ?scope=mine filter, which already degrades gracefully after a
+// restart).
+const maxTrackedSessions = 10000
+
 // sessionInvoices remembers which invoices each session created. It is
 // in-memory: after a restart, earlier invoices show only under "all".
 type sessionInvoices struct {
-	mu   sync.Mutex
-	byID map[string]map[string]bool
+	mu    sync.Mutex
+	byID  map[string]map[string]bool
+	order []string // session IDs in insertion order, for oldest-first eviction
 }
 
 func newSessionInvoices() *sessionInvoices {
@@ -46,8 +54,20 @@ func (s *sessionInvoices) recordCreated(session string, calls []agent.ToolCall) 
 		}
 		if s.byID[session] == nil {
 			s.byID[session] = make(map[string]bool)
+			s.order = append(s.order, session)
+			s.evictOldestLocked()
 		}
 		s.byID[session][id] = true
+	}
+}
+
+// evictOldestLocked drops oldest-inserted sessions until the map is within the
+// cap. Caller holds the lock.
+func (s *sessionInvoices) evictOldestLocked() {
+	for len(s.byID) > maxTrackedSessions && len(s.order) > 0 {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		delete(s.byID, oldest)
 	}
 }
 
@@ -120,6 +140,24 @@ func (p *pendingActions) take(session, id string, now time.Time) ([]agent.ToolCa
 		return nil, false
 	}
 	return a.calls, true
+}
+
+// sweepExpired drops expired actions across every session and removes sessions
+// left with no actions, so the store does not accumulate stale entries for
+// sessions that never call add again. It is driven by the periodic sweeper.
+func (p *pendingActions) sweepExpired(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for session, actions := range p.bySession {
+		for id, a := range actions {
+			if now.After(a.expires) {
+				delete(actions, id)
+			}
+		}
+		if len(actions) == 0 {
+			delete(p.bySession, session)
+		}
+	}
 }
 
 // sessionID returns the visitor's session ID, issuing a new cookie if absent.

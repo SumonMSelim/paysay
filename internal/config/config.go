@@ -48,7 +48,6 @@ type Bedrock struct {
 // disabled, PaySay operates as a text chat agent, which keeps the demo
 // runnable without microphone access.
 type Voice struct {
-	Enabled      bool
 	TTSEnabled   bool
 	SampleRateHz int32
 }
@@ -141,7 +140,6 @@ func Load() (*Config, error) {
 			MaxTokens: int32(getEnvInt("BEDROCK_MAX_TOKENS", defaultMaxTokens)),
 		},
 		Voice: Voice{
-			Enabled:      getEnvBool("VOICE_ENABLED", true),
 			TTSEnabled:   getEnvBool("VOICE_TTS_ENABLED", true),
 			SampleRateHz: int32(getEnvInt("VOICE_SAMPLE_RATE_HZ", defaultSampleRateHz)),
 		},
@@ -149,9 +147,12 @@ func Load() (*Config, error) {
 			Region: getEnv("AWS_REGION", defaultRegion),
 		},
 		Server: Server{
-			Addr:            getEnv("SERVER_ADDR", defaultAddr),
-			ReadTimeout:     getEnvDuration("SERVER_READ_TIMEOUT", 30*time.Second),
-			WriteTimeout:    getEnvDuration("SERVER_WRITE_TIMEOUT", 60*time.Second),
+			Addr:        getEnv("SERVER_ADDR", defaultAddr),
+			ReadTimeout: getEnvDuration("SERVER_READ_TIMEOUT", 30*time.Second),
+			// WriteTimeout must exceed the chat handler's own 90s turn deadline
+			// (server/handlers.go chatTurnTimeout) so a slow agent turn can
+			// still write its 504 response instead of the connection being cut.
+			WriteTimeout:    getEnvDuration("SERVER_WRITE_TIMEOUT", 120*time.Second),
 			ShutdownTimeout: getEnvDuration("SERVER_SHUTDOWN_TIMEOUT", 15*time.Second),
 			AllowedOrigins:  getEnvList("SERVER_ALLOWED_ORIGINS", []string{"*"}),
 

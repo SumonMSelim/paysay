@@ -32,7 +32,7 @@ func confirmServer(t *testing.T, ag Agent) (http.Handler, *recordingInvoker) {
 		t.Fatalf("config.Load: %v", err)
 	}
 	inv := &recordingInvoker{}
-	return New(Options{Config: cfg, Agent: ag, Invoices: inv}).Handler(), inv
+	return New(Options{Config: cfg, Agent: ag, Invoices: inv, ApprovalTools: []string{"send_invoice", "send_invoice_reminder", "create_invoice"}}).Handler(), inv
 }
 
 // proposeSend chats once and returns the pending approval ID and session cookie.

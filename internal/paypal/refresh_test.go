@@ -205,3 +205,42 @@ func TestRefreshingProviderRelaunchesAfterServerDies(t *testing.T) {
 		t.Errorf("got %q with %d launches, want a relaunched server on tok-2", res.Text, len(h.launched))
 	}
 }
+
+// panickingProvider panics on Invoke, simulating a bug in the underlying MCP
+// provider.
+type panickingProvider struct{ tokenProvider }
+
+func (p *panickingProvider) Invoke(context.Context, string, json.RawMessage) (ToolResult, error) {
+	panic("boom")
+}
+
+func TestRefreshingProviderInvokePanicReleasesLock(t *testing.T) {
+	h, r := newHarnessProvider(t)
+	r.mu.Lock()
+	r.current = &panickingProvider{}
+	r.mu.Unlock()
+
+	func() {
+		defer func() {
+			if rec := recover(); rec == nil {
+				t.Fatal("expected Invoke to propagate the panic")
+			}
+		}()
+		_, _ = r.Invoke(context.Background(), "list_invoices", nil)
+	}()
+
+	// If the read lock leaked, this call would block forever; run it on a
+	// goroutine with a deadline so a regression fails the test instead of
+	// hanging it.
+	done := make(chan struct{})
+	go func() {
+		h.advance(9 * time.Hour) // force a refresh path that takes the write lock
+		_, _ = r.Invoke(context.Background(), "list_invoices", nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Invoke deadlocked: the read lock was not released after a panic")
+	}
+}
