@@ -130,8 +130,10 @@ function applyStrings() {
       const ctl = timelineScheduler.features.timeRanges.currentTimeLine;
       ctl.name = todayText;
       if (ctl.initialConfig) ctl.initialConfig.name = todayText;
-      const label = els.timelineScheduler?.querySelector(".b-sch-current-time label");
-      if (label) label.textContent = todayText;
+      const pill = els.timelineScheduler?.querySelector(
+        ".b-time-ranges-header-canvas .timeline-today-pill",
+      );
+      if (pill) pill.textContent = todayText;
     }
   }
   updateTimelineOverdue(state.invoices || []);
@@ -638,6 +640,31 @@ function applyShowTimeline(call) {
 const NO_CUSTOMER_ID = "__no_customer__";
 const TIMELINE_FILTER_ID = "timelineCustomerFilter";
 
+// invoiceHasNoDueDate is true for open invoices that cannot become overdue
+// because PayPal returned an empty due date.
+function invoiceHasNoDueDate(inv) {
+  const status = String(inv.status || "").toUpperCase();
+  return OPEN_STATUSES.has(status) && !String(inv.due || "").trim();
+}
+
+// formatTimelineBadgeText builds the overdue chip copy, appending the
+// without-due-date count when any open invoice lacks a due date.
+function formatTimelineBadgeText(overdueCount, noDueCount, translate) {
+  const tr = translate || t;
+  const noDuePart =
+    noDueCount <= 0
+      ? ""
+      : tr(noDueCount === 1 ? "timeline.withoutDueOne" : "timeline.withoutDue", { n: noDueCount });
+  if (overdueCount > 0) {
+    const overduePart = tr(overdueCount === 1 ? "timeline.overdueOne" : "timeline.overdue", {
+      n: overdueCount,
+    });
+    return noDuePart ? `${overduePart} · ${noDuePart}` : overduePart;
+  }
+  const base = tr("timeline.noOverdue");
+  return noDuePart ? `${base} · ${noDuePart}` : base;
+}
+
 // computeInvoiceDates calculates the start/end dates and overdue status for an invoice bar.
 // A bar runs from creation to due date; if none, to paid date; if open with no due date, to today.
 function computeInvoiceDates(inv) {
@@ -649,6 +676,7 @@ function computeInvoiceDates(inv) {
 
   const status = String(inv.status || "").toUpperCase();
   const isOpen = OPEN_STATUSES.has(status);
+  const hasNoDueDate = invoiceHasNoDueDate(inv);
 
   let end = null;
   let isOverdue = false;
@@ -688,24 +716,25 @@ function computeInvoiceDates(inv) {
     end = new Date(start.getTime() + 24 * 3600 * 1000);
   }
 
-  return { start, end, isOverdue };
+  return { start, end, isOverdue, hasNoDueDate };
 }
 
 function updateTimelineOverdue(invoices) {
   let overdueCount = 0;
+  let noDueCount = 0;
   for (const inv of invoices) {
-    const { isOverdue } = computeInvoiceDates(inv);
+    const { isOverdue, hasNoDueDate } = computeInvoiceDates(inv);
     if (isOverdue) overdueCount++;
+    if (hasNoDueDate) noDueCount++;
   }
 
   if (els.timelineOverdueChip && els.timelineOverdueText) {
     if (overdueCount > 0) {
       els.timelineOverdueChip.classList.add("has-overdue");
-      els.timelineOverdueText.textContent = t(overdueCount === 1 ? "timeline.overdueOne" : "timeline.overdue", { n: overdueCount });
     } else {
       els.timelineOverdueChip.classList.remove("has-overdue");
-      els.timelineOverdueText.textContent = t("timeline.noOverdue");
     }
+    els.timelineOverdueText.textContent = formatTimelineBadgeText(overdueCount, noDueCount);
   }
   if (els.navOverdueCount) {
     els.navOverdueCount.hidden = overdueCount === 0;
@@ -735,6 +764,10 @@ function setupTimeline() {
     rowHeight: 50,
     barMargin: 7,
     viewPreset: "weekAndMonth",
+    // Below this width Bryntum adds b-sch-event-narrow; we then show Labels.before
+    // instead of truncating the in-bar amount (SchedulerEventRendering#narrowEventWidth).
+    narrowEventWidth: 100,
+    detectEventBarLayoutIssues: false,
     features: {
       stickyEvents: true,
       eventDrag: false,
@@ -743,19 +776,49 @@ function setupTimeline() {
       eventMenu: false,
       scheduleMenu: false,
       cellEdit: false,
+      // Labels.before places text beside a narrow bar (Scheduler/feature/Labels).
+      // Prefer "before" so the label sits in the past and does not collide with
+      // the Today marker near the right edge of the default view.
+      labels: {
+        before: {
+          renderer({ eventRecord }) {
+            const inv = eventRecord.invoice;
+            if (!inv) return "";
+            return `${money(inv.amount, inv.currency)} · ${t("status." + inv.status)}`;
+          },
+        },
+      },
       timeRanges: {
         showCurrentTimeLine: {
           name: t("timeline.today") || "Today",
         },
-        showHeaderElements: false,
+        // Header pill sits in the month band (CSS); body stays a thin unlabeled line.
+        showHeaderElements: true,
+        bodyRenderer() {
+          return "";
+        },
+        headerRenderer({ timeRange }) {
+          const raw =
+            timeRange?.name ||
+            (timeRange?.id === "currentTime" || timeRange?.currentTime
+              ? t("timeline.today")
+              : "") ||
+            "";
+          return `<span class="timeline-today-pill">${escapeHtml(raw)}</span>`;
+        },
       },
       eventTooltip: {
         template: ({ eventRecord }) => {
           const inv = eventRecord.invoice;
           if (!inv) return "";
           const statusVal = safeStatus(inv.status);
-          const { isOverdue } = computeInvoiceDates(inv);
+          const { isOverdue, hasNoDueDate } = computeInvoiceDates(inv);
           const custName = inv.customer ? inv.customer : (t("timeline.noCustomer") || "No customer");
+          const dueRow = inv.due
+            ? `<div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.due"))}:</span> ${escapeHtml(shortDate(inv.due))}${isOverdue ? ` <span class="timeline-tip-overdue">(${escapeHtml(t("timeline.overdueTag"))})</span>` : ""}</div>`
+            : hasNoDueDate
+              ? `<div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.due"))}:</span> ${escapeHtml(t("timeline.noDueDate"))}</div>`
+              : "";
           return `
             <div class="timeline-tip">
               <div class="timeline-tip-head">
@@ -766,7 +829,7 @@ function setupTimeline() {
                 <div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("confirm.customer"))}:</span> <b>${escapeHtml(custName)}</b></div>
                 <div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.invoice"))}:</span> <span class="mono">${escapeHtml(inv.id || "")}</span></div>
                 <div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.created"))}:</span> ${escapeHtml(shortDate(inv.created))}</div>
-                ${inv.due ? `<div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.due"))}:</span> ${escapeHtml(shortDate(inv.due))}${isOverdue ? ` <span class="timeline-tip-overdue">(${escapeHtml(t("timeline.overdueTag"))})</span>` : ""}</div>` : ""}
+                ${dueRow}
                 ${inv.paid ? `<div class="timeline-tip-row"><span class="timeline-tip-label">${escapeHtml(t("col.paid"))}:</span> ${escapeHtml(shortDate(inv.paid))}</div>` : ""}
               </div>
             </div>
@@ -828,14 +891,17 @@ function updateTimelineData(invoices) {
   let maxTime = -Infinity;
 
   const events = invoices.map((inv) => {
-    const { start, end, isOverdue } = computeInvoiceDates(inv);
+    const { start, end, isOverdue, hasNoDueDate } = computeInvoiceDates(inv);
     const sTime = start.getTime();
     const eTime = end.getTime();
     if (sTime < minTime) minTime = sTime;
     if (eTime > maxTime) maxTime = eTime;
 
     const statusVal = safeStatus(inv.status);
-    const cls = `event-status-${statusVal}` + (isOverdue ? " event-overdue" : "");
+    const cls =
+      `event-status-${statusVal}` +
+      (isOverdue ? " event-overdue" : "") +
+      (hasNoDueDate ? " event-no-due" : "");
     const custTrimmed = inv.customer ? String(inv.customer).trim() : "";
     const resourceId = custTrimmed || NO_CUSTOMER_ID;
 
@@ -866,11 +932,26 @@ function updateTimelineData(invoices) {
   if (els.timelineFilter && els.timelineFilter.value) {
     applyTimelineFilter(els.timelineFilter.value);
   } else {
-    // Default view: scroll so today is near the right edge
-    const padDays = window.innerWidth <= 860 ? 1 : 0;
-    const targetDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + padDays);
-    timelineScheduler.scrollToDate(targetDate, { block: "end", animate: false });
+    // Default view: scroll so today is near the right edge. Defer until after
+    // store refresh / label layout so a wide time span does not leave the
+    // viewport stuck at the range start.
+    scrollTimelineToToday();
   }
+}
+
+function scrollTimelineToToday() {
+  if (!timelineScheduler) return;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const padDays = window.innerWidth <= 860 ? 1 : 0;
+  const targetDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + padDays);
+  const run = () => {
+    if (!timelineScheduler) return;
+    timelineScheduler.scrollToDate(targetDate, { block: "end", animate: false });
+  };
+  requestAnimationFrame(() => {
+    requestAnimationFrame(run);
+  });
 }
 
 async function renderTimeline() {
@@ -901,11 +982,7 @@ function applyTimelineFilter(filter) {
   const q = String(filter || "").trim().toLowerCase();
   if (!q) {
     timelineScheduler.resourceStore.removeFilter(TIMELINE_FILTER_ID);
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const padDays = window.innerWidth <= 860 ? 1 : 0;
-    const targetDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + padDays);
-    timelineScheduler.scrollToDate(targetDate, { block: "end", animate: false });
+    scrollTimelineToToday();
     return;
   }
   timelineScheduler.resourceStore.filter({

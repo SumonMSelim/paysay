@@ -395,37 +395,101 @@ button { cursor: pointer; background: none; border: 0; }
 .b-sch-event.event-overdue {
   outline: 2px solid var(--bad) !important; outline-offset: -1px;
 }
-.b-sch-event-wrap {
-  min-width: 65px !important;
+/* Open invoices with no due date: faded bar + dashed trailing edge */
+.b-sch-event.event-no-due {
+  border-right: 2px dashed rgba(28, 26, 22, 0.4) !important;
+  opacity: 0.78;
 }
 .b-sch-event {
-  min-width: 65px !important;
   container-type: inline-size !important;
 }
+/*
+ * stickyEvents uses position:sticky on .b-sch-event-content with width:auto.
+ * Forcing width:100% prevents the content from sliding into view when a bar
+ * starts off-screen (Bryntum StickyEvents / styling guide).
+ */
 .b-sch-event-content {
-  width: 100% !important;
-  overflow: hidden !important;
+  width: auto !important;
+  max-width: 100%;
+  overflow: visible !important;
 }
 .timeline-bar {
-  display: flex; align-items: center; gap: 5px;
-  font-size: 12px; line-height: 1.2; padding: 0 6px;
-  width: 100%; height: 100%; overflow: hidden;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; line-height: 1.2; padding: 0 2px;
+  width: max-content; max-width: 100%; height: 100%;
+  box-sizing: border-box;
 }
 .timeline-bar-amount {
   font-weight: 600; font-variant-numeric: tabular-nums;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  flex: 0 1 auto; min-width: 0;
+  white-space: nowrap; flex: 0 0 auto;
 }
 .timeline-bar-status {
-  font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  flex: 0 100 auto; min-width: 0;
+  font-weight: 500; white-space: nowrap;
+  flex: 0 0 auto;
   display: inline-flex; align-items: center; gap: 4px;
 }
 .timeline-bar-sep { opacity: 0.5; flex-shrink: 0; }
+/* Only drop status when the bar itself is truly narrow (not a clipped wide bar). */
 @container (max-width: 110px) {
-  .timeline-bar-status {
+  .b-sch-event-narrow .timeline-bar-status {
     display: none !important;
   }
+}
+
+/* Narrow bars: hide truncated in-bar text; Bryntum Labels.before shows amount beside.
+   Do not blank wide bars — b-sch-event-narrow is absent when the full bar is wide. */
+.b-sch-event-narrow .timeline-bar {
+  visibility: hidden;
+}
+.b-sch-event-wrap:not(:has(.b-sch-event-narrow)) > .b-sch-label-before {
+  display: none !important;
+}
+.b-sch-event-wrap > .b-sch-label-before {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  background: var(--surface);
+  padding: 1px 4px;
+  border-radius: 4px;
+  z-index: 5;
+}
+
+/* Today: thin line in rows; small pill in the month band (above week labels).
+   headerRenderer outputs .timeline-today-pill directly (no <label>).
+   The header current-time node sits on the week row, so the pill is shifted
+   up by one header-row (~30px) into the month band. */
+.b-timeline-sub-grid .b-sch-current-time {
+  width: 2px;
+}
+.b-timeline-sub-grid .b-sch-current-time label,
+.b-timeline-sub-grid .b-sch-current-time .timeline-today-pill {
+  display: none !important;
+}
+.b-sch-timeaxiscolumn,
+.b-time-ranges-header-canvas,
+.b-time-ranges-header-canvas .b-sch-current-time {
+  overflow: visible !important;
+}
+.b-time-ranges-header-canvas .b-sch-current-time .timeline-today-pill {
+  position: absolute;
+  top: -26px; /* one header row up → month band */
+  left: 0;
+  transform: translateX(5px); /* sit just to the right of the line */
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: 0.01em;
+  color: #fff;
+  background: var(--bad);
+  padding: 0 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  z-index: 30;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
 }
 
 /* Tooltip */
