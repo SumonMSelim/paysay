@@ -112,11 +112,16 @@ func (m *MockProvider) Invoke(ctx context.Context, name string, args json.RawMes
 func (m *MockProvider) Close() error { return nil }
 
 func (m *MockProvider) createInvoice(args json.RawMessage) (ToolResult, error) {
+	// Resolve invoice_date and due_date the same way the live shaping path does,
+	// so a demo invoice always has a due date (the merchant's, when valid, or
+	// the 14-day default) and can therefore become overdue.
+	args = applyInvoiceDates(args)
 	var in struct {
 		RecipientEmail string          `json:"recipient_email"`
 		Currency       string          `json:"currency_code"`
 		Items          json.RawMessage `json:"items"`
 		Total          string          `json:"total"`
+		InvoiceDate    string          `json:"invoice_date"`
 		DueDate        string          `json:"due_date"`
 	}
 	_ = json.Unmarshal(args, &in)
@@ -144,7 +149,14 @@ func (m *MockProvider) createInvoice(args json.RawMessage) (ToolResult, error) {
 		DueDate:    in.DueDate,
 	}
 	m.invoices[id] = inv
-	return marshalResult(inv)
+	res, err := marshalResult(inv)
+	if err != nil {
+		return res, err
+	}
+	// Demo mode sets the due date directly, so report it as set for the same
+	// frontend fields the live path annotates (due_date, due_date_set).
+	res.Text = annotateDueDate(res.Text, inv.DueDate, inv.DueDate != "")
+	return res, nil
 }
 
 // sumItems computes a total from an items array of the shape

@@ -12,9 +12,21 @@ import (
 )
 
 const (
-	sandboxOAuthURL    = "https://api-m.sandbox.paypal.com/v1/oauth2/token"
-	productionOAuthURL = "https://api-m.paypal.com/v1/oauth2/token"
+	sandboxBaseURL    = "https://api-m.sandbox.paypal.com"
+	productionBaseURL = "https://api-m.paypal.com"
+
+	sandboxOAuthURL    = sandboxBaseURL + "/v1/oauth2/token"
+	productionOAuthURL = productionBaseURL + "/v1/oauth2/token"
 )
+
+// apiBaseURL returns the REST API base URL for the given environment. It is used
+// for direct Invoicing API calls that the MCP server does not expose.
+func apiBaseURL(environment string) string {
+	if strings.ToUpper(environment) == "PRODUCTION" {
+		return productionBaseURL
+	}
+	return sandboxBaseURL
+}
 
 // TokenResponse represents the JSON returned by PayPal OAuth2 token endpoint.
 type TokenResponse struct {

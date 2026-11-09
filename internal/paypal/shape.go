@@ -16,6 +16,13 @@ func ShapeCreateInvoiceArgs(raw json.RawMessage, fallbackMerchantEmail string) j
 		return raw
 	}
 
+	// Resolve the invoice and due dates first so the invoice carries a real
+	// invoice date (and, in demo mode, a due date). On the live MCP server the
+	// create_invoice tool only accepts a flat invoice_date and has no due-date
+	// or payment-term field, so the due date cannot be sent there; it is still
+	// resolved here so callers and tests see a consistent value.
+	raw = applyInvoiceDates(raw)
+
 	var probe map[string]any
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return raw
@@ -122,10 +129,16 @@ func ShapeCreateInvoiceArgs(raw json.RawMessage, fallbackMerchantEmail string) j
 		})
 	}
 
-	now := time.Now().UTC().Format("2006-01-02")
+	// invoice_date was resolved by applyInvoiceDates above; carry it through.
+	// It is always present and valid at this point, but fall back to today to
+	// be safe if an upstream caller bypassed resolution.
+	invoiceDate := time.Now().UTC().Format("2006-01-02")
+	if d, ok := probe["invoice_date"].(string); ok && strings.TrimSpace(d) != "" {
+		invoiceDate = strings.TrimSpace(d)
+	}
 	detail := map[string]any{
 		"currency_code": currency,
-		"invoice_date":  now,
+		"invoice_date":  invoiceDate,
 	}
 	if note != "" {
 		detail["note"] = note

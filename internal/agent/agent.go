@@ -237,6 +237,11 @@ func (a *Agent) pendingApproval(uses []types.ToolUseBlock) []ToolCall {
 			// report the error to the model instead.
 			continue
 		}
+		// For invoice creation, resolve the invoice and due dates now so the
+		// confirmation card shows the exact dates the invoice will use.
+		if name == "create_invoice" {
+			args = paypal.ApplyCreateInvoiceDates(args)
+		}
 		pending = append(pending, ToolCall{Name: name, Input: args})
 	}
 	return pending

@@ -89,11 +89,48 @@ func TestSystemPromptExplainsInvoiceStatuses(t *testing.T) {
 	}
 }
 
+func TestSystemPromptBansRawStatusCodesInReplies(t *testing.T) {
+	p := SystemPrompt("PaySay", MustGet("en-US"))
+	for _, want := range []string{
+		"Never read out a raw status code",
+		"still waiting to be paid",
+		"not \"Invoice ID: INV2-MVAT-",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+}
+
+func TestSystemPromptMentionsDueDateDefault(t *testing.T) {
+	p := SystemPrompt("PaySay", MustGet("en-US"))
+	for _, want := range []string{"pass a due date if the merchant mentions one", "14 days"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+}
+
 func TestGermanInstructionUsesFormalAddressAndDraftWording(t *testing.T) {
 	de := MustGet("de-DE").SystemInstruction
 	for _, want := range []string{"„Sie“", "noch nicht versendet"} {
 		if !strings.Contains(de, want) {
 			t.Errorf("German instruction missing %q", want)
+		}
+	}
+}
+
+func TestSystemPromptAssistantName(t *testing.T) {
+	p := SystemPrompt("PaySay", MustGet("en-US"))
+	for _, want := range []string{
+		"PaySay Assistant",
+		"PaySay Assistent",
+		"ผู้ช่วย PaySay",
+		"introducing yourself",
+		"Do not start every reply with your name",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("system prompt missing %q", want)
 		}
 	}
 }

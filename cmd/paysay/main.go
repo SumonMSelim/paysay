@@ -104,6 +104,7 @@ func buildToolProvider(ctx context.Context, cfg *config.Config, logger *slog.Log
 	}
 
 	opts := []paypal.Option{paypal.WithAllowedTools(paypal.InvoiceTools...)}
+	opts = append(opts, paypal.WithLogger(logger))
 	if cfg.PayPal.MerchantEmail != "" {
 		opts = append(opts, paypal.WithMerchantEmail(cfg.PayPal.MerchantEmail))
 	}

@@ -24,8 +24,10 @@ export interface Logger {
  *
  * For PayPal Invoicing, that field carries the merchant's invoice NUMBER (e.g.
  * "0007"), not the resource ID (INV2-...). The caller therefore matches it
- * against each invoice's number first, falling back to its ID. (The exact field
- * semantics need live-sandbox confirmation; see REPORT.md.)
+ * against each invoice's number first, falling back to its ID. (Confirmed
+ * against the live sandbox: a paid invoice with number "0001" appeared in
+ * Transaction Search with transaction_info.invoice_id "0001" and
+ * transaction_status "S".)
  *
  * If Transaction Search fails for any reason — most commonly a 403 because the
  * feature is not enabled on the PayPal app — this returns an empty set and logs
